@@ -193,7 +193,7 @@ contract CustomUniswapV3MigratorTest is Test {
 
         uint256 transferAmount0 = 1e24;
         uint256 transferAmount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, token1, transferAmount0, transferAmount1);
+        _transferTokensToMigrator(tokenA, tokenB, token0, transferAmount0, transferAmount1);
 
         uint160 targetPrice = SQRT_PRICE_3_2;
         address recipient = address(0xbeef);
@@ -226,7 +226,7 @@ contract CustomUniswapV3MigratorTest is Test {
 
         uint256 transferAmount0 = 1e24;
         uint256 transferAmount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, token1, transferAmount0, transferAmount1);
+        _transferTokensToMigrator(tokenA, tokenB, token0, transferAmount0, transferAmount1);
 
         uint160 targetPrice = SQRT_PRICE_3_2;
         address recipient = address(0xbeef);
@@ -321,7 +321,7 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertPoolInitialized(pool);
 
         uint256 amount = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, token1, amount, amount);
+        _transferTokensToMigrator(tokenA, tokenB, token0, amount, amount);
 
         address recipient = address(0xbeef);
 
@@ -348,7 +348,7 @@ contract CustomUniswapV3MigratorTest is Test {
 
         address pool = migrator.initialize(token0, token1, liquidityMigratorData);
 
-        _transferTokensToMigrator(tokenA, tokenB, token0, token1, amount0, amount1);
+        _transferTokensToMigrator(tokenA, tokenB, token0, amount0, amount1);
 
         address recipient = address(0xbeef);
 
@@ -395,7 +395,7 @@ contract CustomUniswapV3MigratorTest is Test {
         }
 
         uint256 amount = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, token1, amount, amount);
+        _transferTokensToMigrator(tokenA, tokenB, token0, amount, amount);
 
         uint160 targetSqrtPriceX96 = TickMath.getSqrtPriceAtTick(targetTick);
         address recipient = address(0xbeef);
@@ -425,7 +425,7 @@ contract CustomUniswapV3MigratorTest is Test {
 
         uint256 amount0 = 1e24;
         uint256 amount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, token1, amount0, amount1);
+        _transferTokensToMigrator(tokenA, tokenB, token0, amount0, amount1);
 
         address recipient = address(0xbeef);
 
@@ -436,6 +436,7 @@ contract CustomUniswapV3MigratorTest is Test {
         int24 tickSpacing = factory.feeAmountTickSpacing(3000);
         (int24 tickLower, int24 tickUpper) = _getTickRange(targetPrice, tickSpacing);
         bool isExtreme = _isExtremePrice(targetPrice, tickLower, tickUpper);
+        _assertMigrationPoolState(pool, targetPrice, liquidity);
         _assertBalances(before, afterSnapshot, isExtreme);
     }
 
@@ -457,7 +458,7 @@ contract CustomUniswapV3MigratorTest is Test {
 
         uint256 amount0 = 1e24;
         uint256 amount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, token1, amount0, amount1);
+        _transferTokensToMigrator(tokenA, tokenB, token0, amount0, amount1);
 
         address recipient = address(0xbeef);
 
@@ -613,7 +614,6 @@ contract CustomUniswapV3MigratorTest is Test {
         TestERC20 tokenA,
         TestERC20 tokenB,
         address token0,
-        address token1,
         uint256 amount0,
         uint256 amount1
     ) internal {
