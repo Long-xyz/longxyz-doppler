@@ -67,7 +67,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
         address numeraire,
         bytes calldata liquidityMigratorData
     ) external onlyAirlock returns (address pool) {
-        require(liquidityMigratorData.length > 0, EmptyLiquidityMigratorData());
+        require(liquidityMigratorData.length == 32, InvalidLiquidityMigratorDataLength());
 
         (address integratorFeeReceiver) = abi.decode(liquidityMigratorData, (address));
         require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
