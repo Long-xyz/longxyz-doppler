@@ -112,37 +112,43 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
         address pool = FACTORY.getPool(token0, token1, FEE_TIER);
         require(pool != address(0), PoolDoesNotExist());
 
-        _rebalance(pool, sqrtPriceX96);
+        _wrapETH(token0, token1);
 
+        _rebalance(pool, token0, token1, sqrtPriceX96);
         (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
 
         int24 tickSpacing = FACTORY.feeAmountTickSpacing(FEE_TIER);
-        (int24 tickLower, int24 tickUpper) = _calculateValidTicks(sqrtPriceX96, tickSpacing);
+        (int24 tickLower, int24 tickUpper, bool isOneSided) = _calculateValidTicks(pool, sqrtPriceX96, tickSpacing);
 
-        uint128 maxLiquidity = _computeMaxLiquidity(balance0, balance1, sqrtPriceX96, tickLower, tickUpper);
-        (uint256 depositAmount0, uint256 depositAmount1) =
-            _getTokenAmountsForLiquidity(maxLiquidity, sqrtPriceX96, tickLower, tickUpper);
+        uint128 liquidity;
 
-        ERC20(token0).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), depositAmount0);
-        ERC20(token1).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), depositAmount1);
+        // if we have depleted our balance and the position is not one-sided, we just skip minting
+        if (isOneSided || (balance0 != 0 && balance1 != 0)) {
+            ERC20(token0).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance0);
+            ERC20(token1).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance1);
 
-        (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) = NONFUNGIBLE_POSITION_MANAGER.mint(
-            INonfungiblePositionManager.MintParams({
+            INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager.MintParams({
                 token0: token0,
                 token1: token1,
                 fee: FEE_TIER,
                 tickLower: tickLower,
                 tickUpper: tickUpper,
-                amount0Desired: depositAmount0,
-                amount1Desired: depositAmount1,
-                amount0Min: depositAmount0 * 99 / 100, // 1% slippage
-                amount1Min: depositAmount1 * 99 / 100, // 1% slippage
+                amount0Desired: balance0,
+                amount1Desired: balance1,
+                amount0Min: 0,
+                amount1Min: 0,
                 recipient: address(CUSTOM_V3_LOCKER),
                 deadline: block.timestamp
-            })
-        );
+            });
 
-        CUSTOM_V3_LOCKER.register(tokenId, amount0, amount1, poolFeeReceivers[pool], recipient);
+            uint256 tokenId;
+            uint256 amount0;
+            uint256 amount1;
+
+            (tokenId, liquidity, amount0, amount1) = NONFUNGIBLE_POSITION_MANAGER.mint(mintParams);
+
+            CUSTOM_V3_LOCKER.register(tokenId, amount0, amount1, poolFeeReceivers[pool], recipient);
+        }
 
         _refundDustAndRevokeAllowances(token0, token1, recipient);
 
@@ -150,12 +156,15 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
     }
 
     /**
-     * @notice Rebalances the pool to the target sqrt price
-     * @dev This is done by swapping any amount to move price - no tokens required as no liquidity
+     * @notice Tries to rebalance the pool to the target sqrt price
+     * @dev Swaps through the pool to move the price. When there's existing liquidity,
+     * it's a best effort to move the price to the target price.
      * @param pool The pool to rebalance
+     * @param token0 The token0 address
+     * @param token1 The token1 address
      * @param targetSqrtPriceX96 The target sqrt price
      */
-    function _rebalance(address pool, uint160 targetSqrtPriceX96) internal {
+    function _rebalance(address pool, address token0, address token1, uint160 targetSqrtPriceX96) internal {
         (uint160 currentSqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
 
         if (currentSqrtPriceX96 == 0) {
@@ -167,55 +176,60 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
             return;
         }
 
-        bool zeroForOne = targetSqrtPriceX96 < currentSqrtPriceX96;
+        (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
 
+        bool zeroForOne = targetSqrtPriceX96 < currentSqrtPriceX96;
         uint160 sqrtPriceLimitX96;
+        uint256 amount;
         if (zeroForOne) {
             // price is decreasing, limit must be between target and MIN
             sqrtPriceLimitX96 =
                 targetSqrtPriceX96 > TickMath.MIN_SQRT_PRICE + 1 ? targetSqrtPriceX96 : TickMath.MIN_SQRT_PRICE + 1;
+            amount = balance0;
         } else {
             // Price is increasing, limit must be between target and MAX
             sqrtPriceLimitX96 =
                 targetSqrtPriceX96 < TickMath.MAX_SQRT_PRICE - 1 ? targetSqrtPriceX96 : TickMath.MAX_SQRT_PRICE - 1;
+            amount = balance1;
         }
 
-        // swap any amount to move price - no tokens required as no liquidity
-        IUniswapV3Pool(pool).swap(address(this), zeroForOne, 1, sqrtPriceLimitX96, "");
-
-        (uint160 newSqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-        require(newSqrtPriceX96 == targetSqrtPriceX96, RebalanceFailed());
-    }
-
-    function _getDivisibleTick(int24 tick, int24 tickSpacing, bool isUpper) internal pure returns (int24 finalTick) {
-        if (isUpper) {
-            // round up to next tick spacing boundary
-            finalTick = tick % tickSpacing == 0 ? tick + tickSpacing : ((tick / tickSpacing) + 1) * tickSpacing;
-        } else {
-            // round down to previous tick spacing boundary
-            finalTick = tick % tickSpacing == 0 ? tick - tickSpacing : (tick / tickSpacing) * tickSpacing;
-        }
+        IUniswapV3Pool(pool).swap(address(this), zeroForOne, int256(amount), sqrtPriceLimitX96, "");
     }
 
     /**
      * @notice Calculates valid tick boundaries for a concentrated liquidity position
-     * @dev Creates a narrow range around the current price, ensuring ticks are:
+     * @dev Creates a narrow range centered around the wanted price, ensuring ticks are:
      *      1. Divisible by tickSpacing
      *      2. Within the usable tick range
      *      3. Properly ordered (lower < upper)
+     *      4. The range includes the wanted price to ensure liquidity is active
      *      Handles edge cases at price extremes by creating a minimal valid range.
-     * @param sqrtPriceX96 The current sqrt price of the pool
+     * @param pool The pool to calculate the valid ticks for
      * @param tickSpacing The tick spacing of the pool
      * @return tickLower The lower tick boundary for the position
      * @return tickUpper The upper tick boundary for the position
+     * @return isOneSided Whether the position is one-sided
      */
     function _calculateValidTicks(
-        uint160 sqrtPriceX96,
+        address pool,
+        uint160 targetSqrtPriceX96,
         int24 tickSpacing
-    ) internal pure returns (int24 tickLower, int24 tickUpper) {
-        int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        tickLower = _getDivisibleTick(currentTick, tickSpacing, false);
-        tickUpper = _getDivisibleTick(currentTick, tickSpacing, true);
+    ) internal view returns (int24 tickLower, int24 tickUpper, bool isOneSided) {
+        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+
+        int24 priceImpliedTick = TickMath.getTickAtSqrtPrice(targetSqrtPriceX96);
+        uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(priceImpliedTick);
+
+        if (targetSqrtPriceX96 != boundaryPrice) {
+            int24 compressed = priceImpliedTick / tickSpacing;
+            if (priceImpliedTick < 0 && priceImpliedTick % tickSpacing != 0) compressed--;
+            tickLower = compressed * tickSpacing;
+            tickUpper = tickLower + tickSpacing;
+        } else {
+            // if it's a boundary price, we need to make sure we include it in the range
+            tickLower = priceImpliedTick - tickSpacing;
+            tickUpper = priceImpliedTick + tickSpacing;
+        }
 
         int24 minUsableTick = TickMath.minUsableTick(tickSpacing);
         int24 maxUsableTick = TickMath.maxUsableTick(tickSpacing);
@@ -228,105 +242,11 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
             tickLower = minUsableTick;
             tickUpper = tickLower + tickSpacing;
         }
-    }
 
-    /**
-     * @notice Computes the maximum liquidity that can be created with the given balances
-     * @dev Based on https://github.com/Uniswap/v4-core/blob/main/test/utils/LiquidityAmounts.sol
-     * @param balance0 Balance of token0
-     * @param balance1 Balance of token1
-     * @param sqrtPriceX96 Current sqrt price of the pool
-     * @param tickLower Lower tick boundary for the position
-     * @param tickUpper Upper tick boundary for the position
-     * @return liquidity The maximum liquidity that can be created
-     */
-    function _computeMaxLiquidity(
-        uint256 balance0,
-        uint256 balance1,
-        uint160 sqrtPriceX96,
-        int24 tickLower,
-        int24 tickUpper
-    ) internal pure returns (uint128 liquidity) {
-        uint160 sqrtRatioAX96 = TickMath.getSqrtPriceAtTick(tickLower);
-        uint160 sqrtRatioBX96 = TickMath.getSqrtPriceAtTick(tickUpper);
+        uint160 sqrtPriceLowerX96 = TickMath.getSqrtPriceAtTick(tickLower);
+        uint160 sqrtPriceUpperX96 = TickMath.getSqrtPriceAtTick(tickUpper);
 
-        if (sqrtPriceX96 <= sqrtRatioAX96) {
-            liquidity = LiquidityAmounts.getLiquidityForAmount0(sqrtRatioAX96, sqrtRatioBX96, balance0);
-        } else if (sqrtPriceX96 < sqrtRatioBX96) {
-            uint128 liquidity0 = LiquidityAmounts.getLiquidityForAmount0(sqrtPriceX96, sqrtRatioBX96, balance0);
-            uint128 liquidity1 = LiquidityAmounts.getLiquidityForAmount1(sqrtRatioAX96, sqrtPriceX96, balance1);
-
-            liquidity = liquidity0 < liquidity1 ? liquidity0 : liquidity1;
-        } else {
-            liquidity = LiquidityAmounts.getLiquidityForAmount1(sqrtRatioAX96, sqrtRatioBX96, balance1);
-        }
-    }
-
-    /**
-     * @notice Computes the exact token amounts needed for a given liquidity and a price range
-     * @dev Based on https://github.com/Uniswap/v4-core/blob/main/test/utils/LiquidityAmounts.sol
-     * @param liquidity The liquidity being valued
-     * @param sqrtPriceX96 The current sqrt price of the pool
-     * @param tickLower The lower tick boundary for the position
-     * @param tickUpper The upper tick boundary for the position
-     * @return amount0 The amount of token0 needed
-     * @return amount1 The amount of token1 needed
-     */
-    function _getTokenAmountsForLiquidity(
-        uint128 liquidity,
-        uint160 sqrtPriceX96,
-        int24 tickLower,
-        int24 tickUpper
-    ) internal pure returns (uint256 amount0, uint256 amount1) {
-        uint160 sqrtPriceAX96 = TickMath.getSqrtPriceAtTick(tickLower);
-        uint160 sqrtPriceBX96 = TickMath.getSqrtPriceAtTick(tickUpper);
-
-        if (sqrtPriceX96 <= sqrtPriceAX96) {
-            amount0 = _getAmount0ForLiquidity(sqrtPriceAX96, sqrtPriceBX96, liquidity);
-        } else if (sqrtPriceX96 < sqrtPriceBX96) {
-            amount0 = _getAmount0ForLiquidity(sqrtPriceX96, sqrtPriceBX96, liquidity);
-            amount1 = _getAmount1ForLiquidity(sqrtPriceAX96, sqrtPriceX96, liquidity);
-        } else {
-            amount1 = _getAmount1ForLiquidity(sqrtPriceAX96, sqrtPriceBX96, liquidity);
-        }
-    }
-
-    /**
-     * @notice Computes the amount of token0 for a given amount of liquidity and a price range
-     * @dev Based on https://github.com/Uniswap/v4-core/blob/main/test/utils/LiquidityAmounts.sol
-     * @param sqrtPriceAX96 A sqrt price representing the first tick boundary
-     * @param sqrtPriceBX96 A sqrt price representing the second tick boundary
-     * @param liquidity The liquidity being valued
-     * @return amount0 The amount of token0
-     */
-    function _getAmount0ForLiquidity(
-        uint160 sqrtPriceAX96,
-        uint160 sqrtPriceBX96,
-        uint128 liquidity
-    ) internal pure returns (uint256 amount0) {
-        if (sqrtPriceAX96 > sqrtPriceBX96) (sqrtPriceAX96, sqrtPriceBX96) = (sqrtPriceBX96, sqrtPriceAX96);
-
-        return FullMath.mulDiv(
-            uint256(liquidity) << FixedPoint96.RESOLUTION, sqrtPriceBX96 - sqrtPriceAX96, sqrtPriceBX96
-        ) / sqrtPriceAX96;
-    }
-
-    /**
-     * @notice Computes the amount of token1 for a given amount of liquidity and a price range
-     * @dev Based on https://github.com/Uniswap/v4-core/blob/main/test/utils/LiquidityAmounts.sol
-     * @param sqrtPriceAX96 A sqrt price representing the first tick boundary
-     * @param sqrtPriceBX96 A sqrt price representing the second tick boundary
-     * @param liquidity The liquidity being valued
-     * @return amount1 The amount of token1
-     */
-    function _getAmount1ForLiquidity(
-        uint160 sqrtPriceAX96,
-        uint160 sqrtPriceBX96,
-        uint128 liquidity
-    ) internal pure returns (uint256 amount1) {
-        if (sqrtPriceAX96 > sqrtPriceBX96) (sqrtPriceAX96, sqrtPriceBX96) = (sqrtPriceBX96, sqrtPriceAX96);
-
-        return FullMath.mulDiv(liquidity, sqrtPriceBX96 - sqrtPriceAX96, FixedPoint96.Q96);
+        isOneSided = sqrtPriceX96 <= sqrtPriceLowerX96 || sqrtPriceX96 >= sqrtPriceUpperX96;
     }
 
     /**
@@ -358,32 +278,51 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
     }
 
     /**
+     * @notice Deposits ETH into WETH if it's one of the active tokens
+     * @param token0 Address of token0
+     * @param token1 Address of token1
+     */
+    function _wrapETH(address token0, address token1) internal {
+        if (token0 == address(WETH) || token1 == address(WETH)) {
+            WETH.deposit{ value: address(this).balance }();
+        }
+    }
+
+    /**
      * @notice Gets the token balances for migration, considering WETH
      * @param token0 Address of token0
      * @param token1 Address of token1
      * @return balance0 Balance of token0
      * @return balance1 Balance of token1
      */
-    function _getTokenBalances(address token0, address token1) internal returns (uint256 balance0, uint256 balance1) {
-        if (token0 == address(WETH)) {
-            WETH.deposit{ value: address(this).balance }();
-            balance0 = WETH.balanceOf(address(this));
-            balance1 = ERC20(token1).balanceOf(address(this));
-        } else if (token1 == address(WETH)) {
-            WETH.deposit{ value: address(this).balance }();
-            balance1 = WETH.balanceOf(address(this));
-            balance0 = ERC20(token0).balanceOf(address(this));
-        } else {
-            balance0 = ERC20(token0).balanceOf(address(this));
-            balance1 = ERC20(token1).balanceOf(address(this));
-        }
+    function _getTokenBalances(
+        address token0,
+        address token1
+    ) internal view returns (uint256 balance0, uint256 balance1) {
+        balance0 = ERC20(token0).balanceOf(address(this));
+        balance1 = ERC20(token1).balanceOf(address(this));
     }
 
     /**
-     * @notice No-op callback for the rebalancing swap
-     * @dev No transfers needed since the pool has no liquidity.
+     * @notice Callback for Uniswap V3 swap
+     * @dev Called by the pool during the swap to request payment. When the pool has existing liquidity,
+     *      we need to transfer the requested tokens to complete the swap.
+     * @param amount0Delta The amount of token0 that was sent (negative) or must be received (positive)
+     * @param amount1Delta The amount of token1 that was sent (negative) or must be received (positive)
      */
-    function uniswapV3SwapCallback(int256, int256, bytes calldata) external {
-        // no-op - the rebalancing swap is done without any tokens
+    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata) external {
+        IUniswapV3Pool pool = IUniswapV3Pool(msg.sender);
+        address token0 = pool.token0();
+        address token1 = pool.token1();
+        uint24 fee = pool.fee();
+
+        require(msg.sender == FACTORY.getPool(token0, token1, fee), InvalidSwapCallbackCaller());
+
+        if (amount0Delta > 0) {
+            ERC20(token0).safeTransfer(msg.sender, uint256(amount0Delta));
+        }
+        if (amount1Delta > 0) {
+            ERC20(token1).safeTransfer(msg.sender, uint256(amount1Delta));
+        }
     }
 }
