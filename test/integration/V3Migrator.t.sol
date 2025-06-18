@@ -82,7 +82,7 @@ contract V3MigratorTest is BaseTest {
         );
     }
 
-    function test_migrate_v3() public {
+    function test_migrate_v3_basicScenario() public {
         address integrator = _setupContracts();
         bytes memory liquidityMigratorData = abi.encode(INTEGRATOR_FEE_RECEIVER);
 
@@ -203,7 +203,6 @@ contract V3MigratorTest is BaseTest {
 
         uint256 epochLength = DEFAULT_EPOCH_LENGTH;
         uint256 targetProceeds = Doppler(payable(hook)).minimumProceeds();
-        uint256 maxProceeds = Doppler(payable(hook)).maximumProceeds();
         uint256 numEpochs = 5;
         uint256 totalTarget = targetProceeds + (targetProceeds / 10);
         uint256 swapAmountPerEpoch = totalTarget / numEpochs;
@@ -251,7 +250,7 @@ contract V3MigratorTest is BaseTest {
         address integrator = _setupContracts();
         bytes memory liquidityMigratorData = abi.encode(INTEGRATOR_FEE_RECEIVER);
 
-        (, address hook, address asset,, address governance, address timelock, address migrationPool) =
+        (, address hook, address asset,,, address timelock, address migrationPool) =
             _createPool(integrator, liquidityMigratorData);
         _assertDopplerInitialState(hook);
 
@@ -695,7 +694,7 @@ contract V3MigratorTest is BaseTest {
             count++;
         }
 
-        (,, uint256 totalTokensSold, uint256 finalProceeds,,) = Doppler(payable(hook)).state();
+        (,,, uint256 finalProceeds,,) = Doppler(payable(hook)).state();
         assertGe(finalProceeds, Doppler(payable(hook)).maximumProceeds(), "Should reach maximum proceeds");
     }
 

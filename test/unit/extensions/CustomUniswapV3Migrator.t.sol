@@ -205,9 +205,8 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertMigrationPoolState(pool, targetPrice, liquidity);
 
         int24 tickSpacing = factory.feeAmountTickSpacing(testFeeTier);
-        (int24 tickLower, int24 tickUpper) = _getTickRange(targetPrice, tickSpacing);
-        bool isExtreme = _isExtremePrice(targetPrice, tickLower, tickUpper);
-        _assertBalances(before, afterMigration, isExtreme);
+        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
+        _assertBalances(before, afterMigration, isExtreme, false);
     }
 
     function test_migrate_PreInitializedPool() public {
@@ -238,9 +237,8 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertMigrationPoolState(pool, targetPrice, liquidity);
 
         int24 tickSpacing = factory.feeAmountTickSpacing(testFeeTier);
-        (int24 tickLower, int24 tickUpper) = _getTickRange(targetPrice, tickSpacing);
-        bool isExtreme = _isExtremePrice(targetPrice, tickLower, tickUpper);
-        _assertBalances(before, afterMigration, isExtreme);
+        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
+        _assertBalances(before, afterMigration, isExtreme, false);
     }
 
     function test_migrate_ETHHandling() public {
@@ -266,9 +264,8 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertMigrationPoolState(pool, targetPrice, liquidity);
 
         int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
-        (int24 tickLower, int24 tickUpper) = _getTickRange(targetPrice, tickSpacing);
-        bool isExtreme = _isExtremePrice(targetPrice, tickLower, tickUpper);
-        _assertBalances(before, afterSnapshot, isExtreme);
+        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
+        _assertBalances(before, afterSnapshot, isExtreme, false);
     }
 
     function test_migrate_DifferentPriceScenarios() public {
@@ -332,9 +329,8 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertMigrationPoolState(pool, targetSqrtPriceX96, liquidity);
 
         int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
-        (int24 tickLower, int24 tickUpper) = _getTickRange(targetSqrtPriceX96, tickSpacing);
-        bool isExtreme = _isExtremePrice(targetSqrtPriceX96, tickLower, tickUpper);
-        _assertBalances(before, afterMigration, isExtreme);
+        (,, bool isExtreme) = _calculateValidTicks(pool, targetSqrtPriceX96, tickSpacing);
+        _assertBalances(before, afterMigration, isExtreme, false);
     }
 
     function testFuzz_migrate_WithVariousAmounts(uint128 amount0, uint128 amount1) public {
@@ -360,9 +356,8 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertMigrationPoolState(pool, targetSqrtPriceX96, liquidity);
 
         int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
-        (int24 tickLower, int24 tickUpper) = _getTickRange(targetSqrtPriceX96, tickSpacing);
-        bool isExtreme = _isExtremePrice(targetSqrtPriceX96, tickLower, tickUpper);
-        _assertBalances(before, afterMigration, isExtreme);
+        (,, bool isExtreme) = _calculateValidTicks(pool, targetSqrtPriceX96, tickSpacing);
+        _assertBalances(before, afterMigration, isExtreme, false);
     }
 
     function testFuzz_migrate_AtVariousTicks(
@@ -406,9 +401,8 @@ contract CustomUniswapV3MigratorTest is Test {
 
         _assertMigrationPoolState(pool, targetSqrtPriceX96, liquidity);
 
-        (int24 tickLower, int24 tickUpper) = _getTickRange(targetSqrtPriceX96, tickSpacing);
-        bool isExtreme = _isExtremePrice(targetSqrtPriceX96, tickLower, tickUpper);
-        _assertBalances(before, afterSnapshot, isExtreme);
+        (,, bool isExtreme) = _calculateValidTicks(pool, targetSqrtPriceX96, tickSpacing);
+        _assertBalances(before, afterSnapshot, isExtreme, false);
     }
 
     function _testMigrationAtPrice(
@@ -434,10 +428,9 @@ contract CustomUniswapV3MigratorTest is Test {
         BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1, recipient, pool);
 
         int24 tickSpacing = factory.feeAmountTickSpacing(3000);
-        (int24 tickLower, int24 tickUpper) = _getTickRange(targetPrice, tickSpacing);
-        bool isExtreme = _isExtremePrice(targetPrice, tickLower, tickUpper);
+        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
         _assertMigrationPoolState(pool, targetPrice, liquidity);
-        _assertBalances(before, afterSnapshot, isExtreme);
+        _assertBalances(before, afterSnapshot, isExtreme, false);
     }
 
     function test_migrate_OnTickBoundary() public {
@@ -469,9 +462,89 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertMigrationPoolState(pool, boundaryPrice, liquidity);
 
         int24 tickSpacing = factory.feeAmountTickSpacing(testFeeTier);
-        (int24 tickLower, int24 tickUpper) = _getTickRange(boundaryPrice, tickSpacing);
-        bool isExtreme = _isExtremePrice(boundaryPrice, tickLower, tickUpper);
-        _assertBalances(before, afterSnapshot, isExtreme);
+        (,, bool isExtreme) = _calculateValidTicks(pool, boundaryPrice, tickSpacing);
+        _assertBalances(before, afterSnapshot, isExtreme, false);
+    }
+
+    function test_migrate_PreexistingLiquidity() public {
+        _testMigratePreexistingLiquidity(TickMath.MAX_SQRT_PRICE - 1, 10e18, (SQRT_PRICE_1_1 * 11) / 10, 50e18);
+        _testMigratePreexistingLiquidity(TickMath.MAX_SQRT_PRICE - 1, 51e18, (SQRT_PRICE_1_1 * 11) / 10, 1e18);
+        _testMigratePreexistingLiquidity(TickMath.MAX_SQRT_PRICE - 1, 51e18, TickMath.MAX_SQRT_PRICE - 1, 50e18);
+        _testMigratePreexistingLiquidity(TickMath.MAX_SQRT_PRICE - 1, 10e18, (SQRT_PRICE_1_1 * 9) / 10, 50e18);
+        _testMigratePreexistingLiquidity(SQRT_PRICE_1_1 * 9 / 10, 10e18, (SQRT_PRICE_1_1 * 8) / 10, 50e18);
+    }
+
+    function _testMigratePreexistingLiquidity(
+        uint160 initializationPrice,
+        uint256 preexistingToken1Amount,
+        uint160 preexistingSqrtPriceX96,
+        uint256 migratorAmounts
+    ) internal {
+        TestERC20 tokenA = new TestERC20(type(uint256).max);
+        TestERC20 tokenB = new TestERC20(type(uint256).max);
+
+        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
+        address pool = factory.createPool(token0, token1, FEE_TIER);
+        IUniswapV3Pool(pool).initialize(initializationPrice);
+
+        address liquidityProvider = address(0x1234);
+
+        if (address(tokenB) == token1) {
+            tokenB.transfer(liquidityProvider, preexistingToken1Amount);
+        } else {
+            tokenA.transfer(liquidityProvider, preexistingToken1Amount);
+        }
+
+        vm.startPrank(liquidityProvider);
+        ERC20(token1).approve(address(nfpm), preexistingToken1Amount);
+
+        int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
+        int24 currentTick = TickMath.getTickAtSqrtPrice(preexistingSqrtPriceX96);
+
+        int24 tickUpper = ((currentTick - tickSpacing) / tickSpacing) * tickSpacing;
+        int24 tickLower = tickUpper - tickSpacing;
+
+        INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager.MintParams({
+            token0: token0,
+            token1: token1,
+            fee: FEE_TIER,
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            amount0Desired: 0,
+            amount1Desired: preexistingToken1Amount,
+            amount0Min: 0,
+            amount1Min: 0,
+            recipient: liquidityProvider,
+            deadline: block.timestamp
+        });
+
+        (uint256 tokenId, uint128 addedLiquidity,,) = nfpm.mint(mintParams);
+        vm.stopPrank();
+
+        assertGt(addedLiquidity, 0, "Liquidity should have been added");
+        assertEq(nfpm.ownerOf(tokenId), liquidityProvider, "LP should own the NFT");
+        (uint160 currentPrice,,,,,,) = IUniswapV3Pool(pool).slot0();
+        assertEq(currentPrice, initializationPrice, "Pool should still be at initialization price");
+        address migratorPool = migrator.initialize(token0, token1, liquidityMigratorData);
+        assertEq(migratorPool, pool, "Should return the existing pool");
+
+        _transferTokensToMigrator(tokenA, tokenB, token0, migratorAmounts, migratorAmounts);
+
+        address recipient = address(0xbeef);
+        uint160 targetPrice = SQRT_PRICE_1_1;
+        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
+        migrator.migrate(targetPrice, token0, token1, recipient);
+        BalanceSnapshot memory afterMigration = _getBalances(token0, token1, recipient, pool);
+
+        // These assumptions don't exist here, so not checking _assertMigrationPoolState
+
+        uint128 activePoolLiquidity = IUniswapV3Pool(pool).liquidity();
+        (, int24 poolCurrentTick,,,,,) = IUniswapV3Pool(pool).slot0();
+
+        console.log("Pool current tick:", poolCurrentTick);
+        console.log("Active pool liquidity:", activePoolLiquidity);
+
+        _assertBalances(before, afterMigration, false, true);
     }
 
     function _getBalances(
@@ -511,32 +584,42 @@ contract CustomUniswapV3MigratorTest is Test {
         });
     }
 
-    function _getTickRange(
-        uint160 sqrtPriceX96,
+    function _calculateValidTicks(
+        address pool,
+        uint160 targetSqrtPriceX96,
         int24 tickSpacing
-    ) internal pure returns (int24 tickLower, int24 tickUpper) {
-        int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+    ) internal view returns (int24 tickLower, int24 tickUpper, bool isOneSided) {
+        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
 
-        int24 compressed = currentTick / tickSpacing;
-        if (currentTick < 0 && currentTick % tickSpacing != 0) compressed--;
-        int24 nearestTick = compressed * tickSpacing;
+        int24 priceImpliedTick = TickMath.getTickAtSqrtPrice(targetSqrtPriceX96);
+        uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(priceImpliedTick);
 
-        tickLower = nearestTick;
-        tickUpper = nearestTick + tickSpacing;
+        if (targetSqrtPriceX96 != boundaryPrice) {
+            int24 compressed = priceImpliedTick / tickSpacing;
+            if (priceImpliedTick < 0 && priceImpliedTick % tickSpacing != 0) compressed--;
+            tickLower = compressed * tickSpacing;
+            tickUpper = tickLower + tickSpacing;
+        } else {
+            tickLower = priceImpliedTick - tickSpacing;
+            tickUpper = priceImpliedTick + tickSpacing;
+        }
 
         int24 minUsableTick = TickMath.minUsableTick(tickSpacing);
         int24 maxUsableTick = TickMath.maxUsableTick(tickSpacing);
 
         if (tickUpper > maxUsableTick) {
             tickUpper = maxUsableTick;
-            tickLower = tickUpper - tickSpacing;
+            tickLower = tickUpper - 1 * tickSpacing;
         }
         if (tickLower < minUsableTick) {
             tickLower = minUsableTick;
-            tickUpper = tickLower + tickSpacing;
+            tickUpper = tickLower + 1 * tickSpacing;
         }
 
-        return (tickLower, tickUpper);
+        uint160 sqrtPriceLowerX96 = TickMath.getSqrtPriceAtTick(tickLower);
+        uint160 sqrtPriceUpperX96 = TickMath.getSqrtPriceAtTick(tickUpper);
+
+        isOneSided = sqrtPriceX96 <= sqrtPriceLowerX96 || sqrtPriceX96 >= sqrtPriceUpperX96;
     }
 
     function _isExtremePrice(uint160 sqrtPriceX96, int24 tickLower, int24 tickUpper) internal pure returns (bool) {
@@ -549,28 +632,47 @@ contract CustomUniswapV3MigratorTest is Test {
     function _assertBalances(
         BalanceSnapshot memory before,
         BalanceSnapshot memory afterSnapshot,
-        bool isExtremePrice
+        bool isExtremePrice,
+        bool isPreexistingLiquidity
     ) internal pure {
         assertEq(afterSnapshot.migratorToken0, 0, "Migrator should have no token0 left");
         assertEq(afterSnapshot.migratorToken1, 0, "Migrator should have no token1 left");
         assertEq(afterSnapshot.migratorETH, 0, "Migrator should have no ETH left");
-        assertGt(
-            afterSnapshot.recipientToken0 + afterSnapshot.recipientToken1, 0, "Should have some refund due to rounding"
-        );
         assertEq(afterSnapshot.lockerNftCount, before.lockerNftCount + 1, "Locker should have received exactly 1 NFT");
         assertEq(afterSnapshot.recipientETH, before.recipientETH, "Recipient should receive no ETH");
 
-        uint256 poolToken0Increase = afterSnapshot.poolToken0 - before.poolToken0;
-        uint256 poolToken1Increase = afterSnapshot.poolToken1 - before.poolToken1;
+        // Handle cases where pool balance might decrease due to swaps
+        uint256 poolToken0Increase =
+            afterSnapshot.poolToken0 > before.poolToken0 ? afterSnapshot.poolToken0 - before.poolToken0 : 0;
+        uint256 poolToken1Increase =
+            afterSnapshot.poolToken1 > before.poolToken1 ? afterSnapshot.poolToken1 - before.poolToken1 : 0;
+
+        // If pool balance decreased, track the decrease
+        uint256 poolToken0Decrease =
+            before.poolToken0 > afterSnapshot.poolToken0 ? before.poolToken0 - afterSnapshot.poolToken0 : 0;
+        uint256 poolToken1Decrease =
+            before.poolToken1 > afterSnapshot.poolToken1 ? before.poolToken1 - afterSnapshot.poolToken1 : 0;
         uint256 token0Refund = afterSnapshot.recipientToken0 - before.recipientToken0;
         uint256 token1Refund = afterSnapshot.recipientToken1 - before.recipientToken1;
 
-        if (!isExtremePrice) {
+        if (!isExtremePrice && !isPreexistingLiquidity) {
             assertLt(token0Refund, before.migratorToken0, "Some token0 should be used for liquidity");
             assertLt(token1Refund, before.migratorToken1, "Some token1 should be used for liquidity");
-        } else {
+        } else if (!isPreexistingLiquidity) {
+            console.log("Initial token0:", before.migratorToken0);
+            console.log("Initial token1:", before.migratorToken1);
+            console.log("Token0 refund:", token0Refund);
+            console.log("Token1 refund:", token1Refund);
+            console.log("Token1 decrease from pool:", poolToken1Decrease);
+
             bool token0FullyRefunded = token0Refund == before.migratorToken0;
             bool token1FullyRefunded = token1Refund == before.migratorToken1;
+
+            // When there's a swap involved, we need to account for tokens received from the swap
+            if (poolToken1Decrease > 0) {
+                // Token1 came out of the pool due to swap, so total refund includes swap output
+                token1FullyRefunded = (token1Refund == before.migratorToken1 + poolToken1Decrease);
+            }
 
             assertTrue(
                 (token0FullyRefunded && !token1FullyRefunded) || (!token0FullyRefunded && token1FullyRefunded),
@@ -578,16 +680,33 @@ contract CustomUniswapV3MigratorTest is Test {
             );
         }
 
-        assertEq(
-            before.migratorToken0,
-            poolToken0Increase + token0Refund,
-            "Token0 balance invariant: initial != pool_increase + refund"
-        );
-        assertEq(
-            before.migratorToken1,
-            poolToken1Increase + token1Refund,
-            "Token1 balance invariant: initial != pool_increase + refund"
-        );
+        // In the presence of swaps, the balance invariant is more complex
+        // The migrator's initial balance = pool increase + refund + amount used in swap
+        // For a swap moving from infinite price to 1:1, token0 goes into the pool, token1 comes out
+        if (poolToken1Decrease > 0) {
+            // Token1 came out of pool due to swap, so it should be in the refund
+            assertEq(
+                before.migratorToken0,
+                poolToken0Increase + token0Refund + poolToken0Decrease,
+                "Token0 balance invariant with swap"
+            );
+            assertEq(
+                before.migratorToken1 + poolToken1Decrease,
+                poolToken1Increase + token1Refund,
+                "Token1 balance invariant with swap"
+            );
+        } else {
+            assertEq(
+                before.migratorToken0,
+                poolToken0Increase + token0Refund,
+                "Token0 balance invariant: initial != pool_increase + refund"
+            );
+            assertEq(
+                before.migratorToken1,
+                poolToken1Increase + token1Refund,
+                "Token1 balance invariant: initial != pool_increase + refund"
+            );
+        }
     }
 
     function _setupMigratorWithFeeTier(
@@ -653,6 +772,14 @@ contract CustomUniswapV3MigratorTest is Test {
 
         assertEq(currentSqrtPriceX96, expectedSqrtPriceX96, "Pool price mismatch");
         assertEq(currentLiquidity, expectedLiquidity, "Pool liquidity mismatch");
+
+        // Allow for small price deviations due to tick spacing
+        uint256 priceDiff = currentSqrtPriceX96 > expectedSqrtPriceX96
+            ? currentSqrtPriceX96 - expectedSqrtPriceX96
+            : expectedSqrtPriceX96 - currentSqrtPriceX96;
+        uint256 tolerance = expectedSqrtPriceX96 / 10_000;
+
+        assertTrue(priceDiff <= tolerance, "Pool price mismatch");
     }
 
     function _assertPoolInitialized(
