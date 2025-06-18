@@ -4,18 +4,14 @@ pragma solidity ^0.8.24;
 interface ICustomUniswapV3Locker {
     /**
      * @notice State of a position
-     * @param amount0 Amount of token0
-     * @param amount1 Amount of token1
      * @param minUnlockDate Minimum unlock date
      * @param integratorFeeReceiver Address of the integrator fee receiver
      * @param recipient Address of the recipient
      */
     struct PositionState {
-        uint256 amount0;
-        uint256 amount1;
         uint64 minUnlockDate;
-        address integratorFeeReceiver;
         address recipient;
+        address integratorFeeReceiver;
     }
 
     /// @notice Thrown when the sender is not the migrator contract
@@ -36,13 +32,7 @@ interface ICustomUniswapV3Locker {
     /// @notice Thrown when the integrator fee receiver is the zero address
     error ZeroFeeReceiverAddress();
 
-    function register(
-        uint256 tokenId,
-        uint256 amount0,
-        uint256 amount1,
-        address integratorFeeReceiver,
-        address timelock
-    ) external;
+    function register(uint256 tokenId, address integratorFeeReceiver, address timelock) external;
 
     function harvest(
         uint256 tokenId

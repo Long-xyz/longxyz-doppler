@@ -142,12 +142,10 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
             });
 
             uint256 tokenId;
-            uint256 amount0;
-            uint256 amount1;
 
-            (tokenId, liquidity, amount0, amount1) = NONFUNGIBLE_POSITION_MANAGER.mint(mintParams);
+            (tokenId, liquidity,,) = NONFUNGIBLE_POSITION_MANAGER.mint(mintParams);
 
-            CUSTOM_V3_LOCKER.register(tokenId, amount0, amount1, poolFeeReceivers[pool], recipient);
+            CUSTOM_V3_LOCKER.register(tokenId, poolFeeReceivers[pool], recipient);
         }
 
         _refundDustAndRevokeAllowances(token0, token1, recipient);

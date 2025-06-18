@@ -50,18 +50,10 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, IERC721Receiver {
     /**
      * @notice Registers the LP tokens held by this contract with a fixed lock up period
      * @param tokenId Token ID of the NFT position
-     * @param amount0 Amount of token0
-     * @param amount1 Amount of token1
      * @param integratorFeeReceiver Address of the integrator fee receiver
      * @param timelock Address of the timelock
      */
-    function register(
-        uint256 tokenId,
-        uint256 amount0,
-        uint256 amount1,
-        address integratorFeeReceiver,
-        address timelock
-    ) external {
+    function register(uint256 tokenId, address integratorFeeReceiver, address timelock) external {
         require(msg.sender == address(MIGRATOR), SenderNotMigrator());
         require(positionStates[tokenId].minUnlockDate == 0, PoolAlreadyInitialized());
         require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
@@ -70,8 +62,6 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, IERC721Receiver {
         require(owner == address(this), NFTPositionNotFound(tokenId));
 
         positionStates[tokenId] = PositionState({
-            amount0: amount0,
-            amount1: amount1,
             minUnlockDate: uint64(block.timestamp + ONE_YEAR),
             integratorFeeReceiver: integratorFeeReceiver,
             recipient: timelock
@@ -100,14 +90,15 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, IERC721Receiver {
     function unlock(
         uint256 tokenId
     ) external {
-        PositionState memory state = positionStates[tokenId];
+        uint64 minUnlockDate = positionStates[tokenId].minUnlockDate;
+        address recipient = positionStates[tokenId].recipient;
 
-        require(state.minUnlockDate > 0, PoolNotInitialized());
-        require(block.timestamp >= state.minUnlockDate, MinUnlockDateNotReached());
+        require(minUnlockDate > 0, PoolNotInitialized());
+        require(block.timestamp >= minUnlockDate, MinUnlockDateNotReached());
 
         harvest(tokenId);
         // TimelockController is safe to receive ERC721 tokens
-        NONFUNGIBLE_POSITION_MANAGER.safeTransferFrom(address(this), state.recipient, tokenId);
+        NONFUNGIBLE_POSITION_MANAGER.safeTransferFrom(address(this), recipient, tokenId);
     }
 
     function _distributeFees(uint256 collectedAmount0, uint256 collectedAmount1, uint256 tokenId) internal {
