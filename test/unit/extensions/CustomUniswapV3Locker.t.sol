@@ -102,12 +102,9 @@ contract CustomUniswapV3LockerTest is Test {
              })
         );
         vm.prank(address(migrator));
-        locker.register(tokenId, amount0, amount1, INTEGRATOR_FEE_RECEIVER, timelock);
+        locker.register(tokenId, INTEGRATOR_FEE_RECEIVER, timelock);
 
-        (uint256 _amount0, uint256 _amount1, uint64 _minUnlockDate, address _integratorFeeReceiver, address _recipient)
-        = locker.positionStates(tokenId);
-        assertEq(_amount0, amount0);
-        assertEq(_amount1, amount1);
+        (uint64 _minUnlockDate, address _integratorFeeReceiver, address _recipient) = locker.positionStates(tokenId);
         assertEq(_minUnlockDate, block.timestamp + 365 days);
         assertEq(_integratorFeeReceiver, INTEGRATOR_FEE_RECEIVER);
         assertEq(_recipient, timelock);
@@ -117,7 +114,7 @@ contract CustomUniswapV3LockerTest is Test {
         (uint256 tokenId,, uint256 amount0, uint256 amount1) = test_register_WithLockUpPeriod_InitializesPool();
         vm.prank(address(migrator));
         vm.expectRevert(ICustomUniswapV3Locker.PoolAlreadyInitialized.selector);
-        locker.register(tokenId, amount0, amount1, INTEGRATOR_FEE_RECEIVER, timelock);
+        locker.register(tokenId, INTEGRATOR_FEE_RECEIVER, timelock);
     }
 
     function test_harvest() public {

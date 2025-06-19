@@ -100,9 +100,9 @@ contract CustomUniswapV3MigratorTest is Test {
         assertEq(pair, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(token0, token1, FEE_TIER), "Wrong pair");
     }
 
-    function test_initialize_RevertsWithEmptyData() public {
-        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.EmptyLiquidityMigratorData.selector));
-        migrator.initialize(address(0x1111), address(0x2222), "");
+    function test_initialize_RevertsWithInvalidLengthData() public {
+        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.InvalidLiquidityMigratorDataLength.selector));
+        migrator.initialize(address(0x1111), address(0x2222), hex"00");
     }
 
     function test_initialize_RevertsWithZeroFeeReceiver() public {
@@ -434,9 +434,6 @@ contract CustomUniswapV3MigratorTest is Test {
     }
 
     function test_migrate_OnTickBoundary() public {
-        uint24 testFeeTier = 3000;
-        migrator = _setupMigratorWithFeeTier(testFeeTier);
-
         int24 boundaryTick = 0;
         uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(boundaryTick);
 
@@ -461,7 +458,7 @@ contract CustomUniswapV3MigratorTest is Test {
 
         _assertMigrationPoolState(pool, boundaryPrice, liquidity);
 
-        int24 tickSpacing = factory.feeAmountTickSpacing(testFeeTier);
+        int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
         (,, bool isExtreme) = _calculateValidTicks(pool, boundaryPrice, tickSpacing);
         _assertBalances(before, afterSnapshot, isExtreme, false);
     }
@@ -540,9 +537,6 @@ contract CustomUniswapV3MigratorTest is Test {
 
         uint128 activePoolLiquidity = IUniswapV3Pool(pool).liquidity();
         (, int24 poolCurrentTick,,,,,) = IUniswapV3Pool(pool).slot0();
-
-        console.log("Pool current tick:", poolCurrentTick);
-        console.log("Active pool liquidity:", activePoolLiquidity);
 
         _assertBalances(before, afterMigration, false, true);
     }
