@@ -218,15 +218,16 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
         int24 priceImpliedTick = TickMath.getTickAtSqrtPrice(targetSqrtPriceX96);
         uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(priceImpliedTick);
 
+        int24 compressed = priceImpliedTick / tickSpacing;
+        if (priceImpliedTick < 0 && priceImpliedTick % tickSpacing != 0) compressed--;
+        int24 divisibleTick = compressed * tickSpacing;
+
         if (targetSqrtPriceX96 != boundaryPrice) {
-            int24 compressed = priceImpliedTick / tickSpacing;
-            if (priceImpliedTick < 0 && priceImpliedTick % tickSpacing != 0) compressed--;
-            tickLower = compressed * tickSpacing;
-            tickUpper = tickLower + tickSpacing;
+            tickLower = divisibleTick;
+            tickUpper = divisibleTick + tickSpacing;
         } else {
-            // if it's a boundary price, we need to make sure we include it in the range
-            tickLower = priceImpliedTick - tickSpacing;
-            tickUpper = priceImpliedTick + tickSpacing;
+            tickLower = divisibleTick - tickSpacing;
+            tickUpper = divisibleTick + tickSpacing;
         }
 
         int24 minUsableTick = TickMath.minUsableTick(tickSpacing);
