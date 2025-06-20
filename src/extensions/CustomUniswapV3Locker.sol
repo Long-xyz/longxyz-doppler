@@ -131,11 +131,11 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
     function _distributeFees(uint256 collectedAmount0, uint256 collectedAmount1, uint256 tokenId) internal {
         if (collectedAmount0 > 0 || collectedAmount1 > 0) {
             (,, address token0, address token1,,,,,,,,) = NONFUNGIBLE_POSITION_MANAGER.positions(tokenId);
-            address integratorFeeReceiver = positionStates[tokenId].integratorFeeReceiver;
 
+            // distribute fees - 95% to integratorFeeReceiver, 5% to dopplerFeeReceiver
+            address integratorFeeReceiver = positionStates[tokenId].integratorFeeReceiver;
             address dopplerFeeReceiver_ = dopplerFeeReceiver;
 
-            // distribute fees - 95% to integratorFeeReceiver, 5% to owner
             if (collectedAmount0 > 0) {
                 uint256 dopplerFee0 = collectedAmount0 * DOPPLER_FEE_WAD / WAD;
                 ERC20(token0).safeTransfer(integratorFeeReceiver, collectedAmount0 - dopplerFee0);
