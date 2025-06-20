@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import { SafeTransferLib, ERC20 } from "@solmate/utils/SafeTransferLib.sol";
 import { WETH as IWETH } from "@solmate/tokens/WETH.sol";
+import { Ownable } from "@openzeppelin/access/Ownable.sol";
 import { TickMath } from "@v4-core/libraries/TickMath.sol";
 import { FullMath } from "@v4-core/libraries/FullMath.sol";
 import { FixedPoint96 } from "@v4-core/libraries/FixedPoint96.sol";
@@ -12,6 +13,7 @@ import { IUniswapV3Pool } from "@v3-core/interfaces/IUniswapV3Pool.sol";
 import { ICustomUniswapV3Migrator } from "src/extensions/interfaces/ICustomUniswapV3Migrator.sol";
 import { INonfungiblePositionManager } from "src/extensions/interfaces/INonfungiblePositionManager.sol";
 import { IBaseSwapRouter02 } from "src/extensions/interfaces/IBaseSwapRouter02.sol";
+import { ILiquidityMigrator } from "src/interfaces/ILiquidityMigrator.sol";
 import { CustomUniswapV3Locker } from "src/extensions/CustomUniswapV3Locker.sol";
 import { ImmutableAirlock } from "src/base/ImmutableAirlock.sol";
 
@@ -19,7 +21,7 @@ import { ImmutableAirlock } from "src/base/ImmutableAirlock.sol";
  * @author ant
  * @notice An extension for LiquidityMigrator to enable real-time fee streaming via Uniswap v3 pool & v3 locker contract
  */
-contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
+contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, ImmutableAirlock {
     using SafeTransferLib for ERC20;
 
     INonfungiblePositionManager public immutable NONFUNGIBLE_POSITION_MANAGER;
@@ -28,9 +30,18 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
     CustomUniswapV3Locker public immutable CUSTOM_V3_LOCKER;
     uint24 public immutable FEE_TIER;
 
+    ILiquidityMigrator public fallbackLiquidityMigrator;
     mapping(address pool => address integratorFeeReceiver) public poolFeeReceivers;
 
     receive() external payable onlyAirlock { }
+
+    /**
+     * @notice Modifier to ensure the caller is the migrator itself
+     */
+    modifier onlySelf() {
+        require(msg.sender == address(this), OnlySelf());
+        _;
+    }
 
     /**
      * @notice Constructs the CustomUniswapV3Migrator and deploys a new CustomUniswapV3Locker
@@ -47,7 +58,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
         address dopplerFeeReceiver_,
         uint24 feeTier_,
         address owner_
-    ) ImmutableAirlock(airlock_) {
+    ) Ownable(owner_) ImmutableAirlock(airlock_) {
         NONFUNGIBLE_POSITION_MANAGER = positionManager_;
         FACTORY = IUniswapV3Factory(router.factory());
         WETH = IWETH(payable(router.WETH9()));
@@ -115,6 +126,28 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
 
         _wrapETH(token0, token1);
 
+        try this.migrateImpl(pool, sqrtPriceX96, token0, token1, recipient) returns (uint256 liquidity) {
+            return liquidity;
+        } catch {
+            return _handleMigrationFailure(sqrtPriceX96, token0, token1, recipient);
+        }
+    }
+
+    /**
+     * @notice Migrates the liquidity into a Uniswap V3 pool
+     * @param pool The pool to migrate to
+     * @param sqrtPriceX96 Square root price of the pool as a Q64.96 value
+     * @param token0 Smaller address of the two tokens
+     * @param token1 Larger address of the two tokens
+     * @param recipient Address receiving the liquidity pool tokens i.e. timelock
+     */
+    function migrateImpl(
+        address pool,
+        uint160 sqrtPriceX96,
+        address token0,
+        address token1,
+        address recipient
+    ) public onlySelf returns (uint256) {
         _rebalance(pool, token0, token1, sqrtPriceX96);
         (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
 
@@ -152,6 +185,17 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
         _refundDustAndRevokeAllowances(token0, token1, recipient);
 
         return liquidity;
+    }
+
+    /**
+     * @notice Sets the fallback liquidity migrator
+     * @param liquidityMigrator The fallback liquidity migrator
+     */
+    function setFallbackLiquidityMigrator(
+        ILiquidityMigrator liquidityMigrator
+    ) external onlyOwner {
+        fallbackLiquidityMigrator = liquidityMigrator;
+        emit FallbackLiquidityMigratorSet(liquidityMigrator);
     }
 
     /**
@@ -275,6 +319,36 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, ImmutableAirlock {
             ERC20(token1).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), 0);
             ERC20(token1).safeTransfer(recipient, balance1);
         }
+    }
+
+    /**
+     * @notice Handles migration failure by relying on the fallback liquidity migrator
+     * @param sqrtPriceX96 Square root price of the pool as a Q64.96 value
+     * @param token0 Smaller address of the two tokens
+     * @param token1 Larger address of the two tokens
+     * @param recipient Address receiving the liquidity pool tokens i.e. timelock
+     * @return liquidity The amount of liquidity migrated
+     */
+    function _handleMigrationFailure(
+        uint160 sqrtPriceX96,
+        address token0,
+        address token1,
+        address recipient
+    ) internal returns (uint256) {
+        emit MigrateFailed(sqrtPriceX96, token0, token1, recipient);
+
+        require(fallbackLiquidityMigrator != ILiquidityMigrator(address(0)), InvalidFallbackLiquidityMigrator());
+
+        (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
+
+        if (balance0 != 0) {
+            ERC20(token0).safeTransfer(address(fallbackLiquidityMigrator), balance0);
+        }
+        if (balance1 != 0) {
+            ERC20(token1).safeTransfer(address(fallbackLiquidityMigrator), balance1);
+        }
+
+        return fallbackLiquidityMigrator.migrate(sqrtPriceX96, token0, token1, recipient);
     }
 
     /**
