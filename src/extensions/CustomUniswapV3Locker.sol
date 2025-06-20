@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import { SafeTransferLib, ERC20 } from "@solmate/utils/SafeTransferLib.sol";
 import { FixedPointMathLib } from "@solmate/utils/FixedPointMathLib.sol";
+import { Ownable } from "@openzeppelin/access/Ownable.sol";
 import { IERC721Receiver } from "@openzeppelin/token/ERC721/IERC721Receiver.sol";
 import { INonfungiblePositionManager } from "src/extensions/interfaces/INonfungiblePositionManager.sol";
 import { ICustomUniswapV3Locker } from "src/extensions/interfaces/ICustomUniswapV3Locker.sol";
@@ -13,7 +14,7 @@ import { ImmutableAirlock } from "src/base/ImmutableAirlock.sol";
  * @author ant
  * @notice An extension built on top of CustomUniswapV3Migrator to enable real-time fee streaming by escrowing LP for a fixed period
  */
-contract CustomUniswapV3Locker is ICustomUniswapV3Locker, IERC721Receiver {
+contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiver {
     using SafeTransferLib for ERC20;
     using FixedPointMathLib for uint256;
     using FixedPointMathLib for uint160;
@@ -28,23 +29,27 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, IERC721Receiver {
     /// @notice Address of the Uniswap V3 migrator
     CustomUniswapV3Migrator public immutable MIGRATOR;
 
-    address public immutable DOPPLER_FEE_RECEIVER;
+    /// @notice Address of the fee receiver
+    address public feeReceiver;
 
     /// @notice Returns the state of a pool
     mapping(uint256 tokenId => PositionState state) public positionStates;
 
     /**
+     * @param owner_ Address of the owner
+     * @param nonfungiblePositionManager_ Address of the Uniswap V3 nonfungible position manager
      * @param migrator_ Address of the Custom Uniswap V3 migrator
-     * @param dopplerFeeReceiver_ Address of the doppler fee receiver
+     * @param feeReceiver_ Address of the fee receiver
      */
     constructor(
+        address owner_,
         INonfungiblePositionManager nonfungiblePositionManager_,
         CustomUniswapV3Migrator migrator_,
-        address dopplerFeeReceiver_
-    ) {
+        address feeReceiver_
+    ) Ownable(owner_) {
         NONFUNGIBLE_POSITION_MANAGER = nonfungiblePositionManager_;
         MIGRATOR = migrator_;
-        DOPPLER_FEE_RECEIVER = dopplerFeeReceiver_;
+        feeReceiver = feeReceiver_;
     }
 
     /**
@@ -101,21 +106,31 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, IERC721Receiver {
         NONFUNGIBLE_POSITION_MANAGER.safeTransferFrom(address(this), recipient, tokenId);
     }
 
+    /**
+     * @notice Sets the fee receiver. Can only be called by the owner
+     * @param feeReceiver_ Address of the fee receiver
+     */
+    function setFeeReceiver(address feeReceiver_) external onlyOwner {
+        feeReceiver = feeReceiver_;
+    }
+
     function _distributeFees(uint256 collectedAmount0, uint256 collectedAmount1, uint256 tokenId) internal {
         if (collectedAmount0 > 0 || collectedAmount1 > 0) {
             (,, address token0, address token1,,,,,,,,) = NONFUNGIBLE_POSITION_MANAGER.positions(tokenId);
             address integratorFeeReceiver = positionStates[tokenId].integratorFeeReceiver;
 
-            // distribute fees - 95% to integratorFeeReceiver, 5% to DOPPLER_FEE_RECEIVER
+            address dopplerFeeReceiver = owner();
+
+            // distribute fees - 95% to integratorFeeReceiver, 5% to owner
             if (collectedAmount0 > 0) {
                 uint256 dopplerFee0 = collectedAmount0 * DOPPLER_FEE_WAD / WAD;
                 ERC20(token0).safeTransfer(integratorFeeReceiver, collectedAmount0 - dopplerFee0);
-                ERC20(token0).safeTransfer(DOPPLER_FEE_RECEIVER, dopplerFee0);
+                ERC20(token0).safeTransfer(dopplerFeeReceiver, dopplerFee0);
             }
             if (collectedAmount1 > 0) {
                 uint256 dopplerFee1 = collectedAmount1 * DOPPLER_FEE_WAD / WAD;
                 ERC20(token1).safeTransfer(integratorFeeReceiver, collectedAmount1 - dopplerFee1);
-                ERC20(token1).safeTransfer(DOPPLER_FEE_RECEIVER, dopplerFee1);
+                ERC20(token1).safeTransfer(dopplerFeeReceiver, dopplerFee1);
             }
         }
     }

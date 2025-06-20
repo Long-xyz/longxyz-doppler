@@ -30,6 +30,7 @@ contract CustomUniswapV3MigratorTest is Test {
     INonfungiblePositionManager public nfpm;
 
     uint24 constant FEE_TIER = 10_000;
+    address constant MIGRATOR_OWNER = address(0x3333);
     address constant DOPPLER_FEE_RECEIVER = address(0x2222);
     address constant INTEGRATOR_FEE_RECEIVER = address(0x1111);
 
@@ -66,7 +67,12 @@ contract CustomUniswapV3MigratorTest is Test {
         nfpm = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
 
         migrator = new CustomUniswapV3Migrator(
-            address(this), nfpm, IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE), DOPPLER_FEE_RECEIVER, FEE_TIER
+            address(this),
+            nfpm,
+            IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE),
+            DOPPLER_FEE_RECEIVER,
+            FEE_TIER,
+            MIGRATOR_OWNER
         );
     }
 
@@ -711,7 +717,8 @@ contract CustomUniswapV3MigratorTest is Test {
             INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE),
             IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE),
             DOPPLER_FEE_RECEIVER,
-            feeTier
+            feeTier,
+            MIGRATOR_OWNER
         );
     }
 

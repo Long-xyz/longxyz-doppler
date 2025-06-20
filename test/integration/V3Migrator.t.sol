@@ -40,6 +40,7 @@ contract V3MigratorTest is BaseTest {
     using StateLibrary for IPoolManager;
 
     uint24 constant FEE_TIER = 10_000;
+    address constant MIGRATOR_OWNER = address(0x3333);
     address constant DOPPLER_FEE_RECEIVER = address(0x2222);
     address constant INTEGRATOR_FEE_RECEIVER = address(0x1111);
 
@@ -453,7 +454,9 @@ contract V3MigratorTest is BaseTest {
         initializer = new UniswapV4Initializer(address(airlock), manager, deployer);
         NFPM = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
         ROUTER_02 = IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE);
-        migrator = new CustomUniswapV3Migrator(address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, FEE_TIER);
+        migrator = new CustomUniswapV3Migrator(
+            address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, FEE_TIER, MIGRATOR_OWNER
+        );
         tokenFactory = new TokenFactory(address(airlock));
         governanceFactory = new GovernanceFactory(address(airlock));
 
@@ -470,7 +473,9 @@ contract V3MigratorTest is BaseTest {
         initializer = new UniswapV4Initializer(address(airlock), manager, deployer);
         NFPM = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
         ROUTER_02 = IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE);
-        customMigrator = new CustomUniswapV3Migrator(address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, feeTier);
+        customMigrator = new CustomUniswapV3Migrator(
+            address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, feeTier, MIGRATOR_OWNER
+        );
         tokenFactory = new TokenFactory(address(airlock));
         governanceFactory = new GovernanceFactory(address(airlock));
 

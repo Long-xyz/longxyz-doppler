@@ -26,6 +26,8 @@ import { console } from "forge-std/console.sol";
 
 contract CustomUniswapV3LockerTest is Test {
     uint24 constant FEE_TIER = 10_000;
+    address constant LOCKER_OWNER = address(0x4444);
+    address constant MIGRATOR_OWNER = address(0x3333);
     address constant DOPPLER_FEE_RECEIVER = address(0x2222);
     address constant INTEGRATOR_FEE_RECEIVER = address(0x1111);
     int24 constant DEFAULT_LOWER_TICK = 0;
@@ -59,15 +61,17 @@ contract CustomUniswapV3LockerTest is Test {
             NFPM,
             ROUTER_02,
             DOPPLER_FEE_RECEIVER,
-            FEE_TIER
+            FEE_TIER,
+            MIGRATOR_OWNER
         );
-        locker = new CustomUniswapV3Locker(NFPM, migrator, DOPPLER_FEE_RECEIVER);
+        locker = new CustomUniswapV3Locker(LOCKER_OWNER, NFPM, migrator, DOPPLER_FEE_RECEIVER);
     }
 
     function test_constructor() public view {
         assertEq(address(locker.NONFUNGIBLE_POSITION_MANAGER()), UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
         assertEq(address(locker.MIGRATOR()), address(migrator));
-        assertEq(locker.DOPPLER_FEE_RECEIVER(), DOPPLER_FEE_RECEIVER);
+        assertEq(locker.feeReceiver(), DOPPLER_FEE_RECEIVER);
+        assertEq(locker.owner(), LOCKER_OWNER);
     }
 
     function test_register_WithLockUpPeriod_InitializesPool()
@@ -175,6 +179,17 @@ contract CustomUniswapV3LockerTest is Test {
         vm.warp(block.timestamp + 1 days);
         vm.expectRevert(ICustomUniswapV3Locker.MinUnlockDateNotReached.selector);
         locker.unlock(tokenId);
+    }
+
+    function test_setFeeReceiver() public {
+        vm.prank(LOCKER_OWNER);
+        locker.setFeeReceiver(address(0xffff));
+        assertEq(locker.feeReceiver(), address(0xffff));
+    }
+
+    function test_setFeeReceiver_RevertsWhenNotOwner() public {
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
+        locker.setFeeReceiver(address(0xffff));
     }
 
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {

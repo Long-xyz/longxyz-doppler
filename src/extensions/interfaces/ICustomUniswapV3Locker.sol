@@ -41,4 +41,6 @@ interface ICustomUniswapV3Locker {
     function unlock(
         uint256 tokenId
     ) external;
+
+    function setFeeReceiver(address feeReceiver) external;
 }
