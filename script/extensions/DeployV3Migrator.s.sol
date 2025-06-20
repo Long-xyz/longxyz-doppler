@@ -25,12 +25,12 @@ contract DeployV3Migrator is Script {
         vm.startBroadcast();
 
         CustomUniswapV3Migrator migrator = new CustomUniswapV3Migrator(
+            OWNER,
             AIRLOCK_BASE,
             INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE),
             IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE),
             DOPPLER_FEE_RECEIVER,
-            FEE_TIER,
-            OWNER
+            FEE_TIER
         );
 
         console.log("migrator deployed at", address(migrator));

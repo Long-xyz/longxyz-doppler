@@ -58,12 +58,12 @@ contract CustomUniswapV3LockerTest is Test {
         tokenBar = new TestERC20(1e25);
 
         migrator = new CustomUniswapV3Migrator(
+            MIGRATOR_OWNER,
             address(this), // airlock
             NFPM,
             ROUTER_02,
             DOPPLER_FEE_RECEIVER,
-            FEE_TIER,
-            MIGRATOR_OWNER
+            FEE_TIER
         );
         locker = new CustomUniswapV3Locker(LOCKER_OWNER, NFPM, migrator, DOPPLER_FEE_RECEIVER);
     }

@@ -45,6 +45,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
 
     /**
      * @notice Constructs the CustomUniswapV3Migrator and deploys a new CustomUniswapV3Locker
+     * @param owner_ Address of the owner
      * @param airlock_ Address of the Airlock contract that will call this migrator
      * @param positionManager_ Uniswap V3 NFT position manager for minting liquidity positions
      * @param router Uniswap V3 router to extract factory and WETH addresses
@@ -52,12 +53,12 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
      * @param feeTier_ The fee tier (in basis points) for the V3 pools this migrator will create
      */
     constructor(
+        address owner_,
         address airlock_,
         INonfungiblePositionManager positionManager_,
         IBaseSwapRouter02 router,
         address dopplerFeeReceiver_,
-        uint24 feeTier_,
-        address owner_
+        uint24 feeTier_
     ) Ownable(owner_) ImmutableAirlock(airlock_) {
         NONFUNGIBLE_POSITION_MANAGER = positionManager_;
         FACTORY = IUniswapV3Factory(router.factory());

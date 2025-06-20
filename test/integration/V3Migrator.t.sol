@@ -455,7 +455,7 @@ contract V3MigratorTest is BaseTest {
         NFPM = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
         ROUTER_02 = IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE);
         migrator = new CustomUniswapV3Migrator(
-            address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, FEE_TIER, MIGRATOR_OWNER
+            MIGRATOR_OWNER, address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, FEE_TIER
         );
         tokenFactory = new TokenFactory(address(airlock));
         governanceFactory = new GovernanceFactory(address(airlock));
@@ -474,7 +474,7 @@ contract V3MigratorTest is BaseTest {
         NFPM = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
         ROUTER_02 = IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE);
         customMigrator = new CustomUniswapV3Migrator(
-            address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, feeTier, MIGRATOR_OWNER
+            MIGRATOR_OWNER, address(airlock), NFPM, ROUTER_02, DOPPLER_FEE_RECEIVER, feeTier
         );
         tokenFactory = new TokenFactory(address(airlock));
         governanceFactory = new GovernanceFactory(address(airlock));
