@@ -7,6 +7,7 @@ import { TickMath } from "@v4-core/libraries/TickMath.sol";
 import { Constants } from "@v4-core-test/utils/Constants.sol";
 import { IUniswapV3Pool } from "@v3-core/interfaces/IUniswapV3Pool.sol";
 import { IQuoterV2 } from "@uniswap/v3-periphery/contracts/interfaces/IQuoterV2.sol";
+import { Ownable } from "@openzeppelin/access/Ownable.sol";
 import { ERC20, IERC20 } from "@openzeppelin/token/ERC20/ERC20.sol";
 
 import { CustomUniswapV3Migrator } from "src/extensions/CustomUniswapV3Migrator.sol";
@@ -70,7 +71,7 @@ contract CustomUniswapV3LockerTest is Test {
     function test_constructor() public view {
         assertEq(address(locker.NONFUNGIBLE_POSITION_MANAGER()), UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
         assertEq(address(locker.MIGRATOR()), address(migrator));
-        assertEq(locker.feeReceiver(), DOPPLER_FEE_RECEIVER);
+        assertEq(locker.dopplerFeeReceiver(), DOPPLER_FEE_RECEIVER);
         assertEq(locker.owner(), LOCKER_OWNER);
     }
 
@@ -181,15 +182,15 @@ contract CustomUniswapV3LockerTest is Test {
         locker.unlock(tokenId);
     }
 
-    function test_setFeeReceiver() public {
+    function test_setDopplerFeeReceiver() public {
         vm.prank(LOCKER_OWNER);
-        locker.setFeeReceiver(address(0xffff));
-        assertEq(locker.feeReceiver(), address(0xffff));
+        locker.setDopplerFeeReceiver(address(0xffff));
+        assertEq(locker.dopplerFeeReceiver(), address(0xffff));
     }
 
-    function test_setFeeReceiver_RevertsWhenNotOwner() public {
+    function test_setDopplerFeeReceiver_RevertsWhenNotOwner() public {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
-        locker.setFeeReceiver(address(0xffff));
+        locker.setDopplerFeeReceiver(address(0xffff));
     }
 
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {

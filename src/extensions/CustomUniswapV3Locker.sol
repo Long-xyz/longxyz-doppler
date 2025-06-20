@@ -29,8 +29,8 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
     /// @notice Address of the Uniswap V3 migrator
     CustomUniswapV3Migrator public immutable MIGRATOR;
 
-    /// @notice Address of the fee receiver
-    address public feeReceiver;
+    /// @notice Address of the Doppler fee receiver
+    address public dopplerFeeReceiver;
 
     /// @notice Returns the state of a pool
     mapping(uint256 tokenId => PositionState state) public positionStates;
@@ -39,17 +39,18 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
      * @param owner_ Address of the owner
      * @param nonfungiblePositionManager_ Address of the Uniswap V3 nonfungible position manager
      * @param migrator_ Address of the Custom Uniswap V3 migrator
-     * @param feeReceiver_ Address of the fee receiver
+     * @param dopplerFeeReceiver_ Address of the Doppler fee receiver
      */
     constructor(
         address owner_,
         INonfungiblePositionManager nonfungiblePositionManager_,
         CustomUniswapV3Migrator migrator_,
-        address feeReceiver_
+        address dopplerFeeReceiver_
     ) Ownable(owner_) {
         NONFUNGIBLE_POSITION_MANAGER = nonfungiblePositionManager_;
         MIGRATOR = migrator_;
-        feeReceiver = feeReceiver_;
+
+        _setDopplerFeeReceiver(dopplerFeeReceiver_);
     }
 
     /**
@@ -107,11 +108,24 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
     }
 
     /**
-     * @notice Sets the fee receiver. Can only be called by the owner
-     * @param feeReceiver_ Address of the fee receiver
+     * @notice Sets the Doppler fee receiver. Can only be called by the owner
+     * @param dopplerFeeReceiver_ Address of the Doppler fee receiver
      */
-    function setFeeReceiver(address feeReceiver_) external onlyOwner {
-        feeReceiver = feeReceiver_;
+    function setDopplerFeeReceiver(
+        address dopplerFeeReceiver_
+    ) external onlyOwner {
+        _setDopplerFeeReceiver(dopplerFeeReceiver_);
+    }
+
+    /**
+     * @notice Sets the Doppler fee receiver
+     * @param dopplerFeeReceiver_ Address of the Doppler fee receiver
+     */
+    function _setDopplerFeeReceiver(
+        address dopplerFeeReceiver_
+    ) internal {
+        dopplerFeeReceiver = dopplerFeeReceiver_;
+        emit DopplerFeeReceiverSet(dopplerFeeReceiver);
     }
 
     function _distributeFees(uint256 collectedAmount0, uint256 collectedAmount1, uint256 tokenId) internal {

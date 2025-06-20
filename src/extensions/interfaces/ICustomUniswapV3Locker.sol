@@ -14,6 +14,9 @@ interface ICustomUniswapV3Locker {
         address integratorFeeReceiver;
     }
 
+    /// @notice Emitted when the Doppler fee receiver is set
+    event DopplerFeeReceiverSet(address dopplerFeeReceiver);
+
     /// @notice Thrown when the sender is not the migrator contract
     error SenderNotMigrator();
 
@@ -42,5 +45,7 @@ interface ICustomUniswapV3Locker {
         uint256 tokenId
     ) external;
 
-    function setFeeReceiver(address feeReceiver) external;
+    function setDopplerFeeReceiver(
+        address dopplerFeeReceiver
+    ) external;
 }
