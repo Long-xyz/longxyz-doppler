@@ -11,6 +11,7 @@ import { ICustomUniswapV3Migrator } from "src/extensions/interfaces/ICustomUnisw
 import { INonfungiblePositionManager } from "src/extensions/interfaces/INonfungiblePositionManager.sol";
 import { IUniswapV3Factory, IBaseSwapRouter02 } from "src/extensions/CustomUniswapV3Migrator.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import { ILiquidityMigrator } from "src/interfaces/ILiquidityMigrator.sol";
 import { SenderNotAirlock } from "src/base/ImmutableAirlock.sol";
 import { CustomUniswapV3Locker } from "src/extensions/CustomUniswapV3Locker.sol";
 import {
@@ -19,6 +20,54 @@ import {
     WETH_BASE,
     UNISWAP_V3_ROUTER_02_BASE
 } from "test/shared/Addresses.sol";
+
+contract CustomUniswapV3TestFallbackMigrator is ILiquidityMigrator {
+    struct MigrationData {
+        address migrator;
+        uint160 sqrtPriceX96;
+        address token0;
+        address token1;
+        address recipient;
+        uint256 balance0;
+        uint256 balance1;
+        uint256 liquidity;
+    }
+
+    MigrationData public migrationData;
+
+    function setMigrationData(
+        MigrationData memory migrationData_
+    ) external {
+        migrationData = migrationData_;
+    }
+
+    function initialize(
+        address asset,
+        address numeraire,
+        bytes calldata liquidityMigratorData
+    ) external override returns (address pool) {
+        revert("Not implemented");
+    }
+
+    function migrate(
+        uint160 sqrtPriceX96,
+        address token0,
+        address token1,
+        address recipient
+    ) external payable override returns (uint256 liquidity) {
+        MigrationData memory data = migrationData;
+
+        if (data.migrator != msg.sender) revert("Invalid migrator");
+        if (data.sqrtPriceX96 != sqrtPriceX96) revert("Invalid sqrtPriceX96");
+        if (data.token0 != token0) revert("Invalid token0");
+        if (data.token1 != token1) revert("Invalid token1");
+        if (data.recipient != recipient) revert("Invalid recipient");
+        if (data.balance0 != ERC20(token0).balanceOf(address(this))) revert("Invalid balance0");
+        if (data.balance1 != ERC20(token1).balanceOf(address(this))) revert("Invalid balance1");
+
+        return data.liquidity;
+    }
+}
 
 contract CustomUniswapV3MigratorTest is Test {
     event Transfer(address indexed from, address indexed to, uint256 value);
@@ -545,6 +594,53 @@ contract CustomUniswapV3MigratorTest is Test {
         (, int24 poolCurrentTick,,,,,) = IUniswapV3Pool(pool).slot0();
 
         _assertBalances(before, afterMigration, false, true);
+    }
+
+    function test_migrate_fallbackLiquidityMigrator() public {
+        uint24 testFeeTier = 3000;
+        migrator = new CustomUniswapV3Migrator(
+            MIGRATOR_OWNER,
+            address(this),
+            INonfungiblePositionManager(address(0)), // NFPM set to 0, mint will revert
+            IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE),
+            DOPPLER_FEE_RECEIVER,
+            testFeeTier
+        );
+
+        CustomUniswapV3TestFallbackMigrator fallbackMigrator = new CustomUniswapV3TestFallbackMigrator();
+
+        (TestERC20 tokenA, TestERC20 tokenB, address token0, address token1) = _createTokenPair();
+
+        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
+        _assertPoolInitialized(pool);
+
+        uint256 transferAmount0 = 1e24;
+        uint256 transferAmount1 = 1e24;
+        _transferTokensToMigrator(tokenA, tokenB, token0, transferAmount0, transferAmount1);
+
+        uint160 targetPrice = SQRT_PRICE_3_2;
+        address recipient = address(0xbeef);
+
+        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.InvalidFallbackLiquidityMigrator.selector));
+        migrator.migrate(targetPrice, token0, token1, recipient);
+
+        vm.prank(MIGRATOR_OWNER);
+        migrator.setFallbackLiquidityMigrator(fallbackMigrator);
+
+        CustomUniswapV3TestFallbackMigrator(fallbackMigrator).setMigrationData(
+            CustomUniswapV3TestFallbackMigrator.MigrationData({
+                migrator: address(migrator),
+                sqrtPriceX96: targetPrice,
+                token0: token0,
+                token1: token1,
+                recipient: recipient,
+                balance0: transferAmount0,
+                balance1: transferAmount1,
+                liquidity: 1000
+            })
+        );
+
+        assertEq(migrator.migrate(targetPrice, token0, token1, recipient), 1000);
     }
 
     function _getBalances(
