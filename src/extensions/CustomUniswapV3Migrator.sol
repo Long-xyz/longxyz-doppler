@@ -119,8 +119,17 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         address token1,
         address recipient
     ) external payable onlyAirlock returns (uint256) {
+        require(token0 < token1, InvalidTokenOrder());
+
         if (token0 == address(0)) token0 = address(WETH);
-        if (token0 > token1) (token0, token1) = (token1, token0);
+        if (token0 > token1) {
+            uint256 invertedSqrtPriceX96 = (1 << 192) / sqrtPriceX96;
+
+            require(invertedSqrtPriceX96 <= type(uint160).max, InvalidSqrtPriceX96());
+            sqrtPriceX96 = uint160(invertedSqrtPriceX96);
+
+            (token0, token1) = (token1, token0);
+        }
 
         address pool = FACTORY.getPool(token0, token1, FEE_TIER);
         require(pool != address(0), PoolDoesNotExist());
