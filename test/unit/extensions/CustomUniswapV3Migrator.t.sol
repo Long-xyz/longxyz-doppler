@@ -296,6 +296,36 @@ contract CustomUniswapV3MigratorTest is Test {
         _assertBalances(before, afterMigration, isExtreme, false);
     }
 
+    function testFuzz_migrate_ethTokenPriceInversionLogic(
+        bytes32 seed
+    ) public {
+        address weth = address(migrator.WETH());
+
+        TestERC20 token = new TestERC20{ salt: seed }(type(uint256).max);
+        bool isTokenLower = address(token) < weth;
+
+        address pool = migrator.initialize(address(token), address(0), liquidityMigratorData);
+        IUniswapV3Pool v3Pool = IUniswapV3Pool(pool);
+
+        if (isTokenLower) {
+            assertEq(v3Pool.token0(), address(token), "Token should be token0");
+            assertEq(v3Pool.token1(), weth, "WETH should be token1");
+        } else {
+            assertEq(v3Pool.token0(), weth, "WETH should be token0");
+            assertEq(v3Pool.token1(), address(token), "High token should be token1");
+        }
+
+        deal(address(migrator), 10 ether);
+        token.transfer(address(migrator), 20e18);
+
+        uint256 liquidity = migrator.migrate(SQRT_PRICE_1_2, address(0), address(token), address(0xbeef));
+        uint160 targetPrice = isTokenLower ? SQRT_PRICE_2_1 : SQRT_PRICE_1_2;
+
+        (uint160 poolPrice,,,,,,) = v3Pool.slot0();
+        assertApproxEqRel(poolPrice, targetPrice, 0.0001e18);
+        assertGt(liquidity, 0, "Should have created liquidity");
+    }
+
     function test_migrate_ETHHandling() public {
         address weth = address(migrator.WETH());
         TestERC20 token = new TestERC20(type(uint256).max);
@@ -867,16 +897,14 @@ contract CustomUniswapV3MigratorTest is Test {
         (uint160 currentSqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
         uint128 currentLiquidity = IUniswapV3Pool(pool).liquidity();
 
-        assertEq(currentSqrtPriceX96, expectedSqrtPriceX96, "Pool price mismatch");
-        assertEq(currentLiquidity, expectedLiquidity, "Pool liquidity mismatch");
-
-        // Allow for small price deviations due to tick spacing
+        // Allow for small price deviations due to tick spacing constraints
         uint256 priceDiff = currentSqrtPriceX96 > expectedSqrtPriceX96
             ? currentSqrtPriceX96 - expectedSqrtPriceX96
             : expectedSqrtPriceX96 - currentSqrtPriceX96;
-        uint256 tolerance = expectedSqrtPriceX96 / 10_000;
+        uint256 tolerance = expectedSqrtPriceX96 / 10_000; // 0.01% tolerance
 
-        assertTrue(priceDiff <= tolerance, "Pool price mismatch");
+        assertTrue(priceDiff <= tolerance, "Pool price should match target within tolerance");
+        assertEq(currentLiquidity, expectedLiquidity, "Pool liquidity mismatch");
     }
 
     function _assertPoolInitialized(

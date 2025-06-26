@@ -37,6 +37,35 @@ struct MineV4Params {
 function mineV4(
     MineV4Params memory params
 ) view returns (bytes32, address, address) {
+    (,,,,,,,, bool isToken0,,,) = abi.decode(
+        params.poolInitializerData,
+        (uint256, uint256, uint256, uint256, int24, int24, uint256, int24, bool, uint256, uint24, int24)
+    );
+
+    address assetMinBound = address(0);
+    address assetMaxBound = address(type(uint160).max);
+    if (isToken0) {
+        assetMaxBound = params.numeraire;
+    } else {
+        assetMinBound = params.numeraire;
+    }
+
+    return _mineV4(params, assetMinBound, assetMaxBound);
+}
+
+function mineV4(
+    MineV4Params memory params,
+    address assetMinBound,
+    address assetMaxBound
+) view returns (bytes32, address, address) {
+    return _mineV4(params, assetMinBound, assetMaxBound);
+}
+
+function _mineV4(
+    MineV4Params memory params,
+    address assetMinBound,
+    address assetMaxBound
+) view returns (bytes32, address, address) {
     (
         uint256 minimumProceeds,
         uint256 maximumProceeds,
@@ -105,13 +134,14 @@ function mineV4(
         )
     );
 
+    address deployer = address(params.poolInitializer.deployer());
     for (uint256 salt; salt < 200_000; ++salt) {
-        address hook = computeCreate2Address(bytes32(salt), dopplerInitHash, address(params.poolInitializer.deployer()));
+        address hook = computeCreate2Address(bytes32(salt), dopplerInitHash, deployer);
         address asset = computeCreate2Address(bytes32(salt), tokenInitHash, address(params.tokenFactory));
 
         if (
-            uint160(hook) & FLAG_MASK == flags && hook.code.length == 0
-                && ((isToken0 && asset < params.numeraire) || (!isToken0 && asset > params.numeraire))
+            uint160(hook) & FLAG_MASK == flags && hook.code.length == 0 && asset > assetMinBound
+                && asset < assetMaxBound
         ) {
             return (bytes32(salt), hook, asset);
         }
