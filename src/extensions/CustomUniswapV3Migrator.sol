@@ -119,24 +119,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         address token1,
         address recipient
     ) external payable onlyAirlock returns (uint256) {
-        require(token0 < token1, InvalidTokenOrder());
-
-        if (token0 == address(0)) token0 = address(WETH);
-        if (token0 > token1) {
-            uint256 invertedSqrtPriceX96 = (1 << 192) / sqrtPriceX96;
-
-            require(invertedSqrtPriceX96 <= type(uint160).max, InvalidSqrtPriceX96());
-            sqrtPriceX96 = uint160(invertedSqrtPriceX96);
-
-            (token0, token1) = (token1, token0);
-        }
-
-        address pool = FACTORY.getPool(token0, token1, FEE_TIER);
-        require(pool != address(0), PoolDoesNotExist());
-
-        _wrapETH(token0, token1);
-
-        try this.migrateImpl(pool, sqrtPriceX96, token0, token1, recipient) returns (uint256 liquidity) {
+        try this.migrateImpl(sqrtPriceX96, token0, token1, recipient) returns (uint256 liquidity) {
             return liquidity;
         } catch {
             return _handleMigrationFailure(sqrtPriceX96, token0, token1, recipient);
@@ -145,19 +128,33 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
 
     /**
      * @notice Migrates the liquidity into a Uniswap V3 pool
-     * @param pool The pool to migrate to
      * @param sqrtPriceX96 Square root price of the pool as a Q64.96 value
      * @param token0 Smaller address of the two tokens
      * @param token1 Larger address of the two tokens
      * @param recipient Address receiving the liquidity pool tokens i.e. timelock
      */
     function migrateImpl(
-        address pool,
         uint160 sqrtPriceX96,
         address token0,
         address token1,
         address recipient
     ) public onlySelf returns (uint256) {
+        require(token0 < token1, InvalidTokenOrder());
+
+        if (token0 == address(0)) {
+            token0 = address(WETH);
+
+            if (token0 > token1) {
+                sqrtPriceX96 = _invertSqrtPriceX96(sqrtPriceX96);
+                (token0, token1) = (token1, token0);
+            }
+        }
+
+        address pool = FACTORY.getPool(token0, token1, FEE_TIER);
+        require(pool != address(0), PoolDoesNotExist());
+
+        _wrapETH(token0, token1);
+
         _rebalance(pool, token0, token1, sqrtPriceX96);
         (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
 
@@ -281,8 +278,8 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
             tickLower = divisibleTick;
             tickUpper = divisibleTick + tickSpacing;
         } else {
-            tickLower = divisibleTick - tickSpacing;
-            tickUpper = divisibleTick + tickSpacing;
+            tickLower = divisibleTick - 20 * tickSpacing;
+            tickUpper = divisibleTick + 20 * tickSpacing;
         }
 
         int24 minUsableTick = TickMath.minUsableTick(tickSpacing);
@@ -359,6 +356,19 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         }
 
         return fallbackLiquidityMigrator.migrate(sqrtPriceX96, token0, token1, recipient);
+    }
+
+    /**
+     * @notice Inverses a sqrtPriceX96 value
+     * @param sqrtPriceX96 The sqrtPriceX96 value to invert
+     * @return invertedSqrtPriceX96 The inverted sqrtPriceX96 value
+     */
+    function _invertSqrtPriceX96(
+        uint160 sqrtPriceX96
+    ) internal pure returns (uint160) {
+        uint256 invertedSqrtPriceX96 = (1 << 192) / sqrtPriceX96;
+        require(invertedSqrtPriceX96 <= type(uint160).max, InvalidSqrtPriceX96());
+        return uint160(invertedSqrtPriceX96);
     }
 
     /**
