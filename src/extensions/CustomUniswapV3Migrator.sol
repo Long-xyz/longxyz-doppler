@@ -290,18 +290,19 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     ) internal returns (uint256) {
         emit MigrateFailed(sqrtPriceX96, token0, token1, recipient);
 
-        require(fallbackLiquidityMigrator != ILiquidityMigrator(address(0)), InvalidFallbackLiquidityMigrator());
+        ILiquidityMigrator fallbackLiquidityMigrator_ = fallbackLiquidityMigrator;
+        require(address(fallbackLiquidityMigrator_) != address(0), InvalidFallbackLiquidityMigrator());
 
         (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
 
         if (balance0 != 0) {
-            ERC20(token0).safeTransfer(address(fallbackLiquidityMigrator), balance0);
+            ERC20(token0).safeTransfer(address(fallbackLiquidityMigrator_), balance0);
         }
         if (balance1 != 0) {
-            ERC20(token1).safeTransfer(address(fallbackLiquidityMigrator), balance1);
+            ERC20(token1).safeTransfer(address(fallbackLiquidityMigrator_), balance1);
         }
 
-        return fallbackLiquidityMigrator.migrate(sqrtPriceX96, token0, token1, recipient);
+        return fallbackLiquidityMigrator_.migrate(sqrtPriceX96, token0, token1, recipient);
     }
 
     /**
