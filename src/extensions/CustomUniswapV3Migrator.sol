@@ -242,22 +242,9 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
 
         bool zeroForOne = targetSqrtPriceX96 < currentSqrtPriceX96;
+        uint256 amount = zeroForOne ? balance0 : balance1;
 
-        uint160 sqrtPriceLimitX96;
-        uint256 amount;
-        if (zeroForOne) {
-            // price is decreasing, limit must be between target and MIN
-            sqrtPriceLimitX96 =
-                targetSqrtPriceX96 > TickMath.MIN_SQRT_PRICE + 1 ? targetSqrtPriceX96 : TickMath.MIN_SQRT_PRICE + 1;
-            amount = balance0;
-        } else {
-            // Price is increasing, limit must be between target and MAX
-            sqrtPriceLimitX96 =
-                targetSqrtPriceX96 < TickMath.MAX_SQRT_PRICE - 1 ? targetSqrtPriceX96 : TickMath.MAX_SQRT_PRICE - 1;
-            amount = balance1;
-        }
-
-        IUniswapV3Pool(pool).swap(address(this), zeroForOne, int256(amount), sqrtPriceLimitX96, "");
+        IUniswapV3Pool(pool).swap(address(this), zeroForOne, int256(amount), targetSqrtPriceX96, "");
     }
 
     /**
