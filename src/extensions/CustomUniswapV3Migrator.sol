@@ -28,6 +28,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     IUniswapV3Factory public immutable FACTORY;
     IWETH public immutable WETH;
     CustomUniswapV3Locker public immutable CUSTOM_V3_LOCKER;
+
     uint24 public immutable FEE_TIER;
 
     ILiquidityMigrator public fallbackLiquidityMigrator;
@@ -156,7 +157,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
 
         _rebalance(pool, token0, token1, sqrtPriceX96);
 
-        uint128 liquidity = _mintPosition(pool, token0, token1, sqrtPriceX96, poolFeeReceivers[pool], recipient);
+        uint128 liquidity = _mintPosition(token0, token1, poolFeeReceivers[pool], recipient);
         _refundDustAndRevokeAllowances(token0, token1, recipient);
 
         return liquidity;
@@ -178,16 +179,13 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
      * @dev This mints a full-range position with all available balance of both tokens
      * @param token0 Address of token0
      * @param token1 Address of token1
-     * @param sqrtPriceX96 Square root price of the pool as a Q64.96 value
      * @param integratorFeeReceiver Address of the integrator fee receiver
      * @param recipient Address receiving the liquidity pool tokens i.e. timelock
      * @return liquidity The amount of liquidity minted
      */
     function _mintPosition(
-        address pool,
         address token0,
         address token1,
-        uint160 sqrtPriceX96,
         address integratorFeeReceiver,
         address recipient
     ) internal returns (uint128 liquidity) {
