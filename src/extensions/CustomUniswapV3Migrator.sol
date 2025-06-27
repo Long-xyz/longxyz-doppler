@@ -208,8 +208,8 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
                 tickUpper: TickMath.maxUsableTick(tickSpacing),
                 amount0Desired: balance0,
                 amount1Desired: balance1,
-                amount0Min: balance0,
-                amount1Min: balance1,
+                amount0Min: 0,
+                amount1Min: 0,
                 recipient: address(CUSTOM_V3_LOCKER),
                 deadline: block.timestamp
             })
