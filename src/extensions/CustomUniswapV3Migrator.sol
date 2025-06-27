@@ -177,6 +177,8 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     /**
      * @notice Mints a new liquidity position
      * @dev This mints a full-range position with all available balance of both tokens
+     *      If there's no balance of either token, it doesn't mint anything instead of
+     *      minting a one-sided position.
      * @param token0 Address of token0
      * @param token1 Address of token1
      * @param integratorFeeReceiver Address of the integrator fee receiver
@@ -190,6 +192,10 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         address recipient
     ) internal returns (uint128 liquidity) {
         (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
+
+        if (balance0 == 0 || balance1 == 0) {
+            return 0;
+        }
 
         ERC20(token0).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance0);
         ERC20(token1).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance1);
