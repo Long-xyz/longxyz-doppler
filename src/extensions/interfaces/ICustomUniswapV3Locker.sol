@@ -47,6 +47,9 @@ interface ICustomUniswapV3Locker {
     /// @notice Thrown when the creator fee setup is invalid
     error InvalidCreatorFeeSetup();
 
+    /// @notice Thrown when the minimum unlock date is in the past
+    error InvalidMinUnlockDate();
+
     function initializePosition(
         address pool,
         uint64 minUnlockDate,

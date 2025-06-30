@@ -79,6 +79,7 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
         require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
         require((creatorFeeReceiver == address(0)) == (creatorFee == 0), InvalidCreatorFeeSetup());
         require(creatorFee <= MAX_CREATOR_FEE_WAD, InvalidCreatorFeeSetup());
+        require(minUnlockDate >= block.timestamp, InvalidMinUnlockDate());
 
         positionStates[pool].minUnlockDate = minUnlockDate;
         positionStates[pool].creatorFeeReceiver = creatorFeeReceiver;

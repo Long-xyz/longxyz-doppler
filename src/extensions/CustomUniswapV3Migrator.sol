@@ -85,9 +85,6 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         (address integratorFeeReceiver, address creatorFeeReceiver, uint256 creatorFee, uint64 minUnlockDate) =
             abi.decode(liquidityMigratorData, (address, address, uint256, uint64));
 
-        require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
-        require(minUnlockDate >= block.timestamp, InvalidMinUnlockDate());
-
         if (numeraire == address(0)) numeraire = address(WETH);
         (address token0, address token1) = asset < numeraire ? (asset, numeraire) : (numeraire, asset);
 

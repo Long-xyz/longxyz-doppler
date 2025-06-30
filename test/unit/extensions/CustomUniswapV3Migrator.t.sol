@@ -9,13 +9,14 @@ import { ERC20 } from "@solmate/tokens/ERC20.sol";
 import { ERC721 } from "@solady/tokens/ERC721.sol";
 import { CustomUniswapV3Migrator } from "src/extensions/CustomUniswapV3Migrator.sol";
 import { ICustomUniswapV3Migrator } from "src/extensions/interfaces/ICustomUniswapV3Migrator.sol";
+import { CustomUniswapV3Locker } from "src/extensions/CustomUniswapV3Locker.sol";
+import { ICustomUniswapV3Locker } from "src/extensions/interfaces/ICustomUniswapV3Locker.sol";
 import { INonfungiblePositionManager } from "src/extensions/interfaces/INonfungiblePositionManager.sol";
 import { IUniswapV3Factory, IBaseSwapRouter02 } from "src/extensions/CustomUniswapV3Migrator.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import { ILiquidityMigrator } from "src/interfaces/ILiquidityMigrator.sol";
 import { SenderNotAirlock } from "src/base/ImmutableAirlock.sol";
 import { Airlock } from "src/Airlock.sol";
-import { CustomUniswapV3Locker } from "src/extensions/CustomUniswapV3Locker.sol";
 import {
     UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE,
     UNISWAP_V3_FACTORY_BASE,
@@ -185,13 +186,13 @@ contract CustomUniswapV3MigratorTest is Test {
 
     function test_initialize_RevertsWithZeroFeeReceiver() public setupMigrator {
         bytes memory invalidData = abi.encode(address(0), address(0), 0, type(uint64).max);
-        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.ZeroFeeReceiverAddress.selector));
+        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Locker.ZeroFeeReceiverAddress.selector));
         migrator.initialize(address(0x1111), address(0x2222), invalidData);
     }
 
     function test_initialize_RevertsWithInvalidMinUnlockDate() public setupMigrator {
         bytes memory invalidData = abi.encode(INTEGRATOR_FEE_RECEIVER, address(0), 0, vm.getBlockTimestamp() - 1);
-        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.InvalidMinUnlockDate.selector));
+        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Locker.InvalidMinUnlockDate.selector));
         migrator.initialize(address(0x1111), address(0x2222), invalidData);
     }
 
@@ -204,10 +205,26 @@ contract CustomUniswapV3MigratorTest is Test {
         assertEq(pool, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(token0, token1, feeTier), "Wrong pool");
     }
 
-    function test_initialize_SetsPoolFeeReceivers() public setupMigrator {
+    function test_initialize_SetsLockerPositionState() public setupMigrator {
+        bytes memory data = abi.encode(INTEGRATOR_FEE_RECEIVER, address(0xcccc), 0.1e18, vm.getBlockTimestamp() + 100);
+
         TokenPair memory tp = _createTokenPair();
-        address pool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
-        assertEq(migrator.poolFeeReceivers(pool), INTEGRATOR_FEE_RECEIVER, "Wrong fee receiver");
+        address pool = migrator.initialize(tp.token0, tp.token1, data);
+        (
+            address creatorFeeReceiver,
+            uint256 creatorFee,
+            address integratorFeeReceiver,
+            address recipient,
+            uint64 minUnlockDate,
+            uint256 tokenId
+        ) = migrator.CUSTOM_V3_LOCKER().positionStates(pool);
+
+        assertEq(integratorFeeReceiver, INTEGRATOR_FEE_RECEIVER, "Wrong integrator fee receiver");
+        assertEq(creatorFeeReceiver, address(0xcccc), "Wrong creator fee receiver");
+        assertEq(creatorFee, 0.1e18, "Wrong creator fee");
+        assertEq(minUnlockDate, vm.getBlockTimestamp() + 100, "Wrong min unlock date");
+        assertEq(recipient, address(0), "Wrong recipient");
+        assertEq(tokenId, 0, "Wrong token ID");
     }
 
     function testFuzz_initialize_InitializesPoolAtExtremePrice(
@@ -256,10 +273,8 @@ contract CustomUniswapV3MigratorTest is Test {
     function test_migrate_BasicScenario() public setupMigrator {
         TokenPair memory tp = _createTokenPair();
 
-        address pool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
+        migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
         _transferTokensToMigrator(tp, 1e24, 1e24);
-
-        assertEq(migrator.poolFeeReceivers(pool), INTEGRATOR_FEE_RECEIVER, "Fee receiver should be registered");
 
         uint160 targetPrice = SQRT_PRICE_3_2;
         address recipient = address(0xbeef);
@@ -364,7 +379,20 @@ contract CustomUniswapV3MigratorTest is Test {
         (address token0, address token1) = _sortTokens(asset, expectedNumeraire);
 
         assertEq(pool, factory.getPool(token0, token1, feeTier), "Pool address mismatch");
-        assertEq(migrator.poolFeeReceivers(pool), integratorFeeReceiver, "Fee receiver mismatch");
+        (
+            address creatorFeeReceiver,
+            uint256 creatorFee,
+            address integratorFeeReceiver,
+            address recipient,
+            uint64 minUnlockDate,
+            uint256 tokenId
+        ) = migrator.CUSTOM_V3_LOCKER().positionStates(pool);
+        assertEq(creatorFeeReceiver, address(0), "Wrong creator fee receiver");
+        assertEq(creatorFee, 0, "Wrong creator fee");
+        assertEq(minUnlockDate, type(uint64).max, "Wrong min unlock date");
+        assertEq(integratorFeeReceiver, integratorFeeReceiver, "Wrong integrator fee receiver");
+        assertEq(recipient, address(0), "Wrong recipient");
+        assertEq(tokenId, 0, "Wrong token ID");
 
         bool isAssetToken0 = asset == token0;
 

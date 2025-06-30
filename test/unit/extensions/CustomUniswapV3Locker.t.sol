@@ -167,6 +167,16 @@ contract CustomUniswapV3LockerTest is Test {
         );
     }
 
+    function test_initializePosition_RevertsInvalidMinUnlockDate() public {
+        _createPool();
+
+        vm.prank(address(migrator));
+        vm.expectRevert(ICustomUniswapV3Locker.InvalidMinUnlockDate.selector);
+        locker.initializePosition(
+            address(pool), uint64(vm.getBlockTimestamp() - 1), address(0), 0, INTEGRATOR_FEE_RECEIVER
+        );
+    }
+
     function test_initializePosition_RevertsInvalidCreatorFeeSetup_MismatchedAddressAndFee() public {
         _createPool();
 
@@ -454,28 +464,28 @@ contract CustomUniswapV3LockerTest is Test {
     }
 
     function _harvest(
-        address pool,
+        address pool_,
         uint256 expectedCreatorFee
     ) internal returns (uint256 collectedAmount0, uint256 collectedAmount1) {
-        (,,,,, uint256 tokenId) = locker.positionStates(pool);
+        (,,,,, uint256 tokenId) = locker.positionStates(pool_);
         (,, address token0, address token1,,,,,,,,) = NFPM.positions(tokenId);
 
         BalanceSnapshot memory before = _getBalances(token0, token1);
-        (collectedAmount0, collectedAmount1) = locker.harvestPosition(pool);
+        (collectedAmount0, collectedAmount1) = locker.harvestPosition(pool_);
         BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1);
         _assertFeeDistribution(before, afterSnapshot, collectedAmount0, collectedAmount1, expectedCreatorFee);
     }
 
     function _unlock(
-        address pool,
+        address pool_,
         uint256 expectedCreatorFee
     ) internal returns (uint256 collectedAmount0, uint256 collectedAmount1) {
-        (,,, address recipient,, uint256 tokenId) = locker.positionStates(pool);
+        (,,, address recipient,, uint256 tokenId) = locker.positionStates(pool_);
         (,, address token0, address token1,,,,,,,,) = NFPM.positions(tokenId);
         uint256 recipientNftBefore = ERC721(address(NFPM)).balanceOf(recipient);
 
         BalanceSnapshot memory before = _getBalances(token0, token1);
-        (collectedAmount0, collectedAmount1) = locker.unlockPosition(pool);
+        (collectedAmount0, collectedAmount1) = locker.unlockPosition(pool_);
         BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1);
         _assertFeeDistribution(before, afterSnapshot, collectedAmount0, collectedAmount1, expectedCreatorFee);
 
