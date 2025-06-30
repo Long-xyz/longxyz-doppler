@@ -4,14 +4,20 @@ pragma solidity ^0.8.24;
 interface ICustomUniswapV3Locker {
     /**
      * @notice State of a position
+     * @param tokenId Token ID of the NFT position
      * @param minUnlockDate Minimum unlock date
-     * @param integratorFeeReceiver Address of the integrator fee receiver
      * @param recipient Address of the recipient
+     * @param creatorFeeReceiver Address of the creator fee receiver
+     * @param creatorFee Creator fee
+     * @param integratorFeeReceiver Address of the integrator fee receiver
      */
     struct PositionState {
-        uint64 minUnlockDate;
-        address recipient;
+        address creatorFeeReceiver;
+        uint256 creatorFee;
         address integratorFeeReceiver;
+        address recipient;
+        uint64 minUnlockDate;
+        uint256 tokenId;
     }
 
     /// @notice Emitted when the Doppler fee receiver is set
@@ -26,8 +32,8 @@ interface ICustomUniswapV3Locker {
     /// @notice Thrown when trying to exit a pool that was not initialized
     error PoolNotInitialized();
 
-    /// @notice Thrown when the Locker contract doesn't hold the NFT position
-    error NFTPositionNotFound(uint256 tokenId);
+    /// @notice Thrown when the Locker contract doesn't hold the position token
+    error InvalidTokenOwnership();
 
     /// @notice Thrown when the minimum unlock date has not been reached
     error MinUnlockDateNotReached();
@@ -35,14 +41,28 @@ interface ICustomUniswapV3Locker {
     /// @notice Thrown when the integrator fee receiver is the zero address
     error ZeroFeeReceiverAddress();
 
-    function register(uint256 tokenId, address integratorFeeReceiver, address timelock) external;
+    /// @notice Thrown when the token ID is invalid
+    error InvalidTokenId();
 
-    function harvest(
-        uint256 tokenId
+    /// @notice Thrown when the creator fee setup is invalid
+    error InvalidCreatorFeeSetup();
+
+    function initializePosition(
+        address pool,
+        uint64 minUnlockDate,
+        address creatorFeeReceiver,
+        uint256 creatorFee,
+        address integratorFeeReceiver
+    ) external;
+
+    function updatePosition(address pool, uint256 tokenId, address recipient) external;
+
+    function harvestPosition(
+        address pool
     ) external returns (uint256 collectedAmount0, uint256 collectedAmount1);
 
-    function unlock(
-        uint256 tokenId
+    function unlockPosition(
+        address pool
     ) external;
 
     function setDopplerFeeReceiver(

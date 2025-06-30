@@ -81,10 +81,12 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         address numeraire,
         bytes calldata liquidityMigratorData
     ) external onlyAirlock returns (address pool) {
-        require(liquidityMigratorData.length == 32, InvalidLiquidityMigratorDataLength());
+        require(liquidityMigratorData.length == 128, InvalidLiquidityMigratorDataLength());
 
-        (address integratorFeeReceiver) = abi.decode(liquidityMigratorData, (address));
+        (address integratorFeeReceiver, address creatorFeeReceiver, uint256 creatorFee, uint64 minUnlockDate) =
+            abi.decode(liquidityMigratorData, (address, address, uint256, uint64));
         require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
+        require(minUnlockDate >= block.timestamp, InvalidMinUnlockDate());
 
         if (numeraire == address(0)) numeraire = address(WETH);
         (address token0, address token1) = asset < numeraire ? (asset, numeraire) : (numeraire, asset);
@@ -102,6 +104,8 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         );
 
         try IUniswapV3Pool(pool).initialize(sqrtPriceX96) { } catch { }
+
+        CUSTOM_V3_LOCKER.registerPosition(pool, minUnlockDate, creatorFeeReceiver, creatorFee, integratorFeeReceiver);
 
         return pool;
     }
@@ -157,7 +161,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
 
         _rebalance(pool, token0, token1, sqrtPriceX96);
 
-        uint128 liquidity = _mintPosition(token0, token1, poolFeeReceivers[pool], recipient);
+        uint128 liquidity = _mintPosition(pool, token0, token1, poolFeeReceivers[pool], recipient);
         _refundDustAndRevokeAllowances(token0, token1, recipient);
 
         return liquidity;
@@ -179,6 +183,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
      * @dev This mints a full-range position with all available balance of both tokens
      *      If there's no balance of either token, it doesn't mint anything instead of
      *      minting a one-sided position.
+     * @param pool Address of the pool
      * @param token0 Address of token0
      * @param token1 Address of token1
      * @param integratorFeeReceiver Address of the integrator fee receiver
@@ -186,6 +191,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
      * @return liquidity The amount of liquidity minted
      */
     function _mintPosition(
+        address pool,
         address token0,
         address token1,
         address integratorFeeReceiver,
@@ -219,7 +225,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
             })
         );
 
-        CUSTOM_V3_LOCKER.register(tokenId, integratorFeeReceiver, recipient);
+        CUSTOM_V3_LOCKER.updatePosition(pool, tokenId, recipient);
     }
 
     /**
