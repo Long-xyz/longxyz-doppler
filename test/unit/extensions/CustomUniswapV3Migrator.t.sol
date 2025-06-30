@@ -88,7 +88,12 @@ contract CustomUniswapV3MigratorTest is Test {
     address constant DOPPLER_FEE_RECEIVER = address(0x2222);
     address constant INTEGRATOR_FEE_RECEIVER = address(0x1111);
 
-    bytes public liquidityMigratorData = abi.encode(INTEGRATOR_FEE_RECEIVER);
+    bytes public liquidityMigratorData = abi.encode(
+        INTEGRATOR_FEE_RECEIVER,
+        address(0),
+        0,
+        type(uint64).max
+    );
 
     // Common price ratios for testing
     uint160 constant SQRT_PRICE_1_1 = 79_228_162_514_264_337_593_543_950_336; // sqrt(1) * 2^96

@@ -128,10 +128,12 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
      * @notice Transfers the whole LP to the recipient (i.e. Timelock contract) after the lockup
      * period. Fees are distributed once more before unlocking
      * @param pool Address of the pool
+     * @return collectedAmount0 Amount of token0 collected
+     * @return collectedAmount1 Amount of token1 collected
      */
     function unlockPosition(
         address pool
-    ) external {
+    ) external returns (uint256 collectedAmount0, uint256 collectedAmount1) {
         uint256 tokenId = positionStates[pool].tokenId;
         uint64 minUnlockDate = positionStates[pool].minUnlockDate;
         address recipient = positionStates[pool].recipient;
@@ -139,7 +141,7 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
         require(minUnlockDate != 0, PoolNotInitialized());
         require(block.timestamp >= minUnlockDate, MinUnlockDateNotReached());
 
-        harvestPosition(pool);
+        (collectedAmount0, collectedAmount1) = harvestPosition(pool);
 
         // TimelockController is safe to receive ERC721 tokens
         NONFUNGIBLE_POSITION_MANAGER.safeTransferFrom(address(this), recipient, tokenId);

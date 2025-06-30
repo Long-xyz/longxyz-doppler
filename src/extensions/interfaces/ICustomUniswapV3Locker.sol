@@ -63,7 +63,7 @@ interface ICustomUniswapV3Locker {
 
     function unlockPosition(
         address pool
-    ) external;
+    ) external returns (uint256 collectedAmount0, uint256 collectedAmount1);
 
     function setDopplerFeeReceiver(
         address dopplerFeeReceiver
