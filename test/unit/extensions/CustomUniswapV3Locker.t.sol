@@ -70,7 +70,7 @@ contract CustomUniswapV3LockerTest is Test {
     function test_constructor() public view {
         uint256 maxCreatorFee = locker.MAX_CREATOR_FEE_WAD();
         uint256 dopplerFee = locker.DOPPLER_FEE_WAD();
-        
+
         assertEq(maxCreatorFee, 1e18 - dopplerFee);
         assertEq(maxCreatorFee, 0.95e18); // 95%
 
@@ -82,17 +82,13 @@ contract CustomUniswapV3LockerTest is Test {
 
     function test_initializePosition_Success() public {
         _createPool();
-        
+
         uint64 minUnlockDate = uint64(block.timestamp + 365 days);
         uint256 creatorFee = 0.1e18; // 10%
-        
+
         vm.prank(address(migrator));
         locker.initializePosition(
-            address(pool),
-            minUnlockDate,
-            CREATOR_FEE_RECEIVER,
-            creatorFee,
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), minUnlockDate, CREATOR_FEE_RECEIVER, creatorFee, INTEGRATOR_FEE_RECEIVER
         );
 
         (
@@ -103,7 +99,7 @@ contract CustomUniswapV3LockerTest is Test {
             uint64 _minUnlockDate,
             uint256 _tokenId
         ) = locker.positionStates(address(pool));
-        
+
         assertEq(_minUnlockDate, minUnlockDate);
         assertEq(_creatorFeeReceiver, CREATOR_FEE_RECEIVER);
         assertEq(_creatorFee, creatorFee);
@@ -112,17 +108,11 @@ contract CustomUniswapV3LockerTest is Test {
 
     function test_initializePosition_WithoutCreatorFee() public {
         _createPool();
-        
+
         uint64 minUnlockDate = uint64(block.timestamp + 30 days);
-        
+
         vm.prank(address(migrator));
-        locker.initializePosition(
-            address(pool),
-            minUnlockDate,
-            address(0),
-            0,
-            INTEGRATOR_FEE_RECEIVER
-        );
+        locker.initializePosition(address(pool), minUnlockDate, address(0), 0, INTEGRATOR_FEE_RECEIVER);
 
         (
             address _creatorFeeReceiver,
@@ -132,7 +122,7 @@ contract CustomUniswapV3LockerTest is Test {
             uint64 _minUnlockDate,
             uint256 _tokenId
         ) = locker.positionStates(address(pool));
-        
+
         assertEq(_minUnlockDate, minUnlockDate);
         assertEq(_creatorFeeReceiver, address(0));
         assertEq(_creatorFee, 0);
@@ -141,43 +131,31 @@ contract CustomUniswapV3LockerTest is Test {
 
     function test_initializePosition_RevertsSenderNotMigrator() public {
         _createPool();
-        
+
         vm.expectRevert(ICustomUniswapV3Locker.SenderNotMigrator.selector);
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            CREATOR_FEE_RECEIVER,
-            0.1e18,
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), CREATOR_FEE_RECEIVER, 0.1e18, INTEGRATOR_FEE_RECEIVER
         );
     }
 
     function test_initializePosition_RevertsPoolAlreadyInitialized() public {
         _createPool();
-        
+
         vm.startPrank(address(migrator));
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            address(0),
-            0,
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), address(0), 0, INTEGRATOR_FEE_RECEIVER
         );
-        
+
         vm.expectRevert(ICustomUniswapV3Locker.PoolAlreadyInitialized.selector);
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            address(0),
-            0,
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), address(0), 0, INTEGRATOR_FEE_RECEIVER
         );
         vm.stopPrank();
     }
 
     function test_initializePosition_RevertsZeroFeeReceiverAddress() public {
         _createPool();
-        
+
         vm.prank(address(migrator));
         vm.expectRevert(ICustomUniswapV3Locker.ZeroFeeReceiverAddress.selector);
         locker.initializePosition(
@@ -191,46 +169,36 @@ contract CustomUniswapV3LockerTest is Test {
 
     function test_initializePosition_RevertsInvalidCreatorFeeSetup_MismatchedAddressAndFee() public {
         _createPool();
-        
-        // Test with creator fee receiver but zero fee
+
         vm.prank(address(migrator));
         vm.expectRevert(ICustomUniswapV3Locker.InvalidCreatorFeeSetup.selector);
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            CREATOR_FEE_RECEIVER,
-            0, // Zero fee with non-zero receiver
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), CREATOR_FEE_RECEIVER, 0, INTEGRATOR_FEE_RECEIVER
         );
     }
 
     function test_initializePosition_RevertsInvalidCreatorFeeSetup_FeeWithoutReceiver() public {
         _createPool();
-        
-        // Test with creator fee but zero receiver
+
         vm.prank(address(migrator));
         vm.expectRevert(ICustomUniswapV3Locker.InvalidCreatorFeeSetup.selector);
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            address(0), // Zero receiver with non-zero fee
-            0.1e18,
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), address(0), 0.1e18, INTEGRATOR_FEE_RECEIVER
         );
     }
 
     function test_initializePosition_RevertsInvalidCreatorFeeSetup_FeeTooHigh() public {
         _createPool();
-        
+
         uint256 maxCreatorFee = 1e18 - locker.DOPPLER_FEE_WAD();
-        
+
         vm.prank(address(migrator));
         vm.expectRevert(ICustomUniswapV3Locker.InvalidCreatorFeeSetup.selector);
         locker.initializePosition(
             address(pool),
             uint64(block.timestamp + 365 days),
             CREATOR_FEE_RECEIVER,
-            maxCreatorFee + 1, // Exceeds maximum allowed
+            maxCreatorFee + 1,
             INTEGRATOR_FEE_RECEIVER
         );
     }
@@ -238,12 +206,12 @@ contract CustomUniswapV3LockerTest is Test {
     function test_updatePosition_Success() public returns (uint256 tokenId) {
         _createPool();
         _initializePosition();
-        
+
         tokenId = _mintPosition();
-        
+
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
+
         (
             address _creatorFeeReceiver,
             uint256 _creatorFee,
@@ -252,7 +220,7 @@ contract CustomUniswapV3LockerTest is Test {
             uint64 _minUnlockDate,
             uint256 _tokenId
         ) = locker.positionStates(address(pool));
-        
+
         assertEq(_tokenId, tokenId);
         assertEq(_recipient, timelock);
     }
@@ -261,7 +229,7 @@ contract CustomUniswapV3LockerTest is Test {
         _createPool();
         _initializePosition();
         uint256 tokenId = _mintPosition();
-        
+
         vm.expectRevert(ICustomUniswapV3Locker.SenderNotMigrator.selector);
         locker.updatePosition(address(pool), tokenId, timelock);
     }
@@ -271,10 +239,10 @@ contract CustomUniswapV3LockerTest is Test {
         _initializePosition();
         uint256 tokenId1 = _mintPosition();
         uint256 tokenId2 = _mintPosition();
-        
+
         vm.startPrank(address(migrator));
         locker.updatePosition(address(pool), tokenId1, timelock);
-        
+
         vm.expectRevert(ICustomUniswapV3Locker.PoolAlreadyInitialized.selector);
         locker.updatePosition(address(pool), tokenId2, timelock);
         vm.stopPrank();
@@ -283,7 +251,7 @@ contract CustomUniswapV3LockerTest is Test {
     function test_updatePosition_RevertsInvalidTokenId() public {
         _createPool();
         _initializePosition();
-        
+
         vm.prank(address(migrator));
         vm.expectRevert(ICustomUniswapV3Locker.InvalidTokenId.selector);
         locker.updatePosition(address(pool), 0, timelock);
@@ -293,7 +261,7 @@ contract CustomUniswapV3LockerTest is Test {
         _createPool();
         _initializePosition();
         uint256 tokenId = _mintPositionToOther(address(this));
-        
+
         vm.prank(address(migrator));
         vm.expectRevert(ICustomUniswapV3Locker.InvalidTokenOwnership.selector);
         locker.updatePosition(address(pool), tokenId, timelock);
@@ -301,54 +269,46 @@ contract CustomUniswapV3LockerTest is Test {
 
     function test_harvestPosition_WithCreatorFee() public {
         _createPool();
-        
-        // Initialize with creator fee
+
         vm.prank(address(migrator));
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            CREATOR_FEE_RECEIVER,
-            0.2e18, // 20% creator fee
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), CREATOR_FEE_RECEIVER, 0.2e18, INTEGRATOR_FEE_RECEIVER
         );
-        
+
         uint256 tokenId = _mintPosition();
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
-        // Generate fees through swaps
+
         _generateFees();
-        
-        // Use harvest utility
-        _harvest(address(pool), 0.2e18);
+        (uint256 collectedAmount0, uint256 collectedAmount1) = _harvest(address(pool), 0.2e18);
+
+        assertGt(collectedAmount0, 0, "Should have collected token0 fees");
+        assertGt(collectedAmount1, 0, "Should have collected token1 fees");
     }
 
     function test_harvestPosition_WithoutCreatorFee() public {
         _createPool();
         _initializePosition();
         uint256 tokenId = _mintPosition();
-        
+
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
-        // Generate fees through swaps
+
         _generateFees();
-        
-        // Use harvest utility
-        _harvest(address(pool), 0);
+        (uint256 collectedAmount0, uint256 collectedAmount1) = _harvest(address(pool), 0);
+        assertGt(collectedAmount0, 0, "Should have collected token0 fees");
+        assertGt(collectedAmount1, 0, "Should have collected token1 fees");
     }
 
     function test_harvestPosition_NoFeesCollected() public {
         _createPool();
         _initializePosition();
         uint256 tokenId = _mintPosition();
-        
+
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
-        // Harvest without generating fees
+
         (uint256 collectedAmount0, uint256 collectedAmount1) = locker.harvestPosition(address(pool));
-        
         assertEq(collectedAmount0, 0);
         assertEq(collectedAmount1, 0);
     }
@@ -357,48 +317,35 @@ contract CustomUniswapV3LockerTest is Test {
         _createPool();
         _initializePosition();
         uint256 tokenId = _mintPosition();
-        
+
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
-        // Generate fees
+
         _generateFees();
-        
-        // Warp to after unlock date
+
         vm.warp(block.timestamp + 366 days);
-        
-        // Call unlock and capture return values
+
         (uint256 collectedAmount0, uint256 collectedAmount1) = _unlock(address(pool), 0);
-        
-        // Verify return values are non-zero (since we generated fees)
         assertGt(collectedAmount0, 0, "Should have collected token0 fees");
         assertGt(collectedAmount1, 0, "Should have collected token1 fees");
     }
-    
+
     function test_unlockPosition_WithCreatorFee() public {
         _createPool();
-        
-        // Initialize with creator fee
+
         vm.prank(address(migrator));
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            CREATOR_FEE_RECEIVER,
-            0.5e18, // 50% creator fee
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), CREATOR_FEE_RECEIVER, 0.5e18, INTEGRATOR_FEE_RECEIVER
         );
-        
+
         uint256 tokenId = _mintPosition();
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
-        // Generate fees
+
         _generateFees();
-        
-        // Warp to after unlock date
+
         vm.warp(block.timestamp + 366 days);
-        
-        // Use unlock utility with creator fee
+
         (uint256 collectedAmount0, uint256 collectedAmount1) = _unlock(address(pool), 0.5e18);
 
         assertGt(collectedAmount0, 0, "Should have collected token0 fees");
@@ -414,23 +361,22 @@ contract CustomUniswapV3LockerTest is Test {
         _createPool();
         _initializePosition();
         uint256 tokenId = _mintPosition();
-        
+
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
-        // Try to unlock before unlock date
+
         vm.warp(block.timestamp + 1 days);
-        
+
         vm.expectRevert(ICustomUniswapV3Locker.MinUnlockDateNotReached.selector);
         locker.unlockPosition(address(pool));
     }
 
     function test_setDopplerFeeReceiver_Success() public {
         address newReceiver = address(0xffff);
-        
+
         vm.prank(LOCKER_OWNER);
         locker.setDopplerFeeReceiver(newReceiver);
-        
+
         assertEq(locker.dopplerFeeReceiver(), newReceiver);
     }
 
@@ -445,137 +391,98 @@ contract CustomUniswapV3LockerTest is Test {
     }
 
     function testFuzz_feeDistribution(uint256 creatorFee, uint256 collectedAmount) public {
-        // Bound inputs
         creatorFee = bound(creatorFee, 0, locker.MAX_CREATOR_FEE_WAD());
-        collectedAmount = bound(collectedAmount, 1, 1e24); // 1 wei to 1M tokens
-        
-        // Calculate expected fees
+        collectedAmount = bound(collectedAmount, 1, 1e24);
+
         uint256 dopplerFee = collectedAmount * locker.DOPPLER_FEE_WAD() / 1e18;
         uint256 creatorFeeAmount = collectedAmount * creatorFee / 1e18;
         uint256 integratorFee = 0;
-        
-        // Only calculate integrator fee if there's remainder
+
         if (collectedAmount > dopplerFee + creatorFeeAmount) {
             integratorFee = collectedAmount - dopplerFee - creatorFeeAmount;
         }
-        
-        // Verify the sum equals the collected amount (no tokens lost)
+
         assertEq(dopplerFee + creatorFeeAmount + integratorFee, collectedAmount);
-        
-        // Verify no underflow can occur
         assertGe(collectedAmount, dopplerFee + creatorFeeAmount);
     }
 
     function testFuzz_harvestWithVariousFees(uint256 creatorFee, uint256 swapAmount) public {
-        // Bound inputs
         creatorFee = bound(creatorFee, 0, locker.MAX_CREATOR_FEE_WAD());
-        swapAmount = bound(swapAmount, 1e16, 50e18); // 0.01 to 50 tokens
-        
+        swapAmount = bound(swapAmount, 1e16, 50e18);
+
         _createPool();
-        
+
         address creatorFeeReceiver = creatorFee > 0 ? CREATOR_FEE_RECEIVER : address(0);
-        
-        // Initialize with fuzzed creator fee
+
         vm.prank(address(migrator));
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            creatorFeeReceiver,
-            creatorFee,
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), creatorFeeReceiver, creatorFee, INTEGRATOR_FEE_RECEIVER
         );
-        
+
         uint256 tokenId = _mintPosition();
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
-        // Generate fees with fuzzed swap amount
+
         _generateFeesWithAmount(swapAmount);
-        
-        // Harvest and assert with fuzzed creator fee
         _harvest(address(pool), creatorFee);
     }
 
     function testFuzz_multipleHarvests(uint8 harvestCount, uint256 swapAmount) public {
-        // Bound inputs
         harvestCount = uint8(bound(harvestCount, 1, 10));
         swapAmount = bound(swapAmount, 1e16, 10e18);
-        
+
         _createPool();
         _initializePosition();
         uint256 tokenId = _mintPosition();
-        
+
         vm.prank(address(migrator));
         locker.updatePosition(address(pool), tokenId, timelock);
-        
+
         (,, address token0, address token1,,,,,,,,) = NFPM.positions(tokenId);
-        
-        // Take initial balance snapshot
+
         BalanceSnapshot memory initial = _getBalances(token0, token1);
-        
+
         for (uint256 i = 0; i < harvestCount; i++) {
-            // Generate fees
             _generateFeesWithAmount(swapAmount);
-            
-            // Harvest and assert with no creator fee
             _harvest(address(pool), 0);
         }
-        
-        // Take final balance snapshot
+
         BalanceSnapshot memory finalSnapshot = _getBalances(token0, token1);
-        
-        // Verify total fees were collected over all harvests
+
         assertGt(finalSnapshot.dopplerToken0, initial.dopplerToken0, "No Doppler fees collected");
         assertGt(finalSnapshot.integratorToken0, initial.integratorToken0, "No integrator fees collected");
     }
 
-    // Helper functions
-    
-    // Harvest utility that takes snapshots and asserts balances
-    function _harvest(address pool, uint256 expectedCreatorFee) internal returns (uint256 collectedAmount0, uint256 collectedAmount1) {
-        // Get token addresses from the position
-        (,,,,,uint256 tokenId) = locker.positionStates(pool);
+    function _harvest(
+        address pool,
+        uint256 expectedCreatorFee
+    ) internal returns (uint256 collectedAmount0, uint256 collectedAmount1) {
+        (,,,,, uint256 tokenId) = locker.positionStates(pool);
         (,, address token0, address token1,,,,,,,,) = NFPM.positions(tokenId);
-        
-        // Take balance snapshot before harvest
+
         BalanceSnapshot memory before = _getBalances(token0, token1);
-        
-        // Harvest fees
         (collectedAmount0, collectedAmount1) = locker.harvestPosition(pool);
-        
-        // Take balance snapshot after harvest
         BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1);
-        
-        // Assert fee distribution
         _assertFeeDistribution(before, afterSnapshot, collectedAmount0, collectedAmount1, expectedCreatorFee);
     }
-    
-    // Unlock utility that takes snapshots and asserts balances and NFT transfer
-    function _unlock(address pool, uint256 expectedCreatorFee) internal returns (uint256 collectedAmount0, uint256 collectedAmount1) {
-        // Get position state
+
+    function _unlock(
+        address pool,
+        uint256 expectedCreatorFee
+    ) internal returns (uint256 collectedAmount0, uint256 collectedAmount1) {
         (,,, address recipient,, uint256 tokenId) = locker.positionStates(pool);
         (,, address token0, address token1,,,,,,,,) = NFPM.positions(tokenId);
-        
-        // Get NFT balance before
         uint256 recipientNftBefore = ERC721(address(NFPM)).balanceOf(recipient);
-        
-        // Take balance snapshot before unlock
+
         BalanceSnapshot memory before = _getBalances(token0, token1);
-        
-        // Unlock position (this will harvest first and return collected amounts)
         (collectedAmount0, collectedAmount1) = locker.unlockPosition(pool);
-        
-        // Take balance snapshot after unlock
         BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1);
-        
-        // Assert fee distribution using the actual collected amounts
         _assertFeeDistribution(before, afterSnapshot, collectedAmount0, collectedAmount1, expectedCreatorFee);
-        
-        // Verify NFT transferred to recipient
+
         assertEq(NFPM.ownerOf(tokenId), recipient, "NFT should be transferred to recipient");
         assertEq(ERC721(address(NFPM)).balanceOf(recipient), recipientNftBefore + 1, "Recipient should receive NFT");
     }
-    
+
     function _createPool() internal {
         tokenFoo.transfer(address(this), 1000e18);
         tokenBar.transfer(address(this), 1000e18);
@@ -591,11 +498,7 @@ contract CustomUniswapV3LockerTest is Test {
     function _initializePosition() internal {
         vm.prank(address(migrator));
         locker.initializePosition(
-            address(pool),
-            uint64(block.timestamp + 365 days),
-            address(0),
-            0,
-            INTEGRATOR_FEE_RECEIVER
+            address(pool), uint64(block.timestamp + 365 days), address(0), 0, INTEGRATOR_FEE_RECEIVER
         );
     }
 
@@ -606,7 +509,7 @@ contract CustomUniswapV3LockerTest is Test {
 
         IERC20(token0).approve(address(NFPM), 100e18);
         IERC20(token1).approve(address(NFPM), 100e18);
-        
+
         (tokenId,,,) = NFPM.mint(
             INonfungiblePositionManager.MintParams({
                 token0: token0,
@@ -624,14 +527,16 @@ contract CustomUniswapV3LockerTest is Test {
         );
     }
 
-    function _mintPositionToOther(address recipient) internal returns (uint256 tokenId) {
+    function _mintPositionToOther(
+        address recipient
+    ) internal returns (uint256 tokenId) {
         (address token0, address token1) = address(tokenFoo) > address(tokenBar)
             ? (address(tokenBar), address(tokenFoo))
             : (address(tokenFoo), address(tokenBar));
 
         IERC20(token0).approve(address(NFPM), 100e18);
         IERC20(token1).approve(address(NFPM), 100e18);
-        
+
         (tokenId,,,) = NFPM.mint(
             INonfungiblePositionManager.MintParams({
                 token0: token0,
@@ -650,14 +555,12 @@ contract CustomUniswapV3LockerTest is Test {
     }
 
     function _generateFees() internal {
-        (,,,,,uint256 _tokenId) = locker.positionStates(address(pool));
+        (,,,,, uint256 _tokenId) = locker.positionStates(address(pool));
         (,, address token0, address token1,,,,,,,,) = NFPM.positions(_tokenId);
-        
-        // Perform swaps to generate fees in both tokens
+
         IERC20(token0).approve(address(ROUTER_02), type(uint256).max);
         IERC20(token1).approve(address(ROUTER_02), type(uint256).max);
-        
-        // Swap token0 to token1 (generates fees in token0)
+
         ROUTER_02.exactInputSingle(
             IBaseSwapRouter02.ExactInputSingleParams({
                 tokenIn: token0,
@@ -669,8 +572,7 @@ contract CustomUniswapV3LockerTest is Test {
                 sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
             })
         );
-        
-        // Swap token1 to token0 (generates fees in token1)
+
         ROUTER_02.exactInputSingle(
             IBaseSwapRouter02.ExactInputSingleParams({
                 tokenIn: token1,
@@ -684,26 +586,25 @@ contract CustomUniswapV3LockerTest is Test {
         );
     }
 
-    // Helper function for generating fees with specific swap amount
-    function _generateFeesWithAmount(uint256 swapAmount) internal {
-        (,,,,,uint256 _tokenId) = locker.positionStates(address(pool));
+    function _generateFeesWithAmount(
+        uint256 swapAmount
+    ) internal {
+        (,,,,, uint256 _tokenId) = locker.positionStates(address(pool));
         (,, address token0, address token1,,,,,,,,) = NFPM.positions(_tokenId);
-        
-        // Ensure we have enough tokens for both swaps
+
         uint256 currentBalance0 = IERC20(token0).balanceOf(address(this));
         if (currentBalance0 < swapAmount / 2) {
             TestERC20(token0).mint(address(this), swapAmount / 2 - currentBalance0);
         }
-        
+
         uint256 currentBalance1 = IERC20(token1).balanceOf(address(this));
         if (currentBalance1 < swapAmount / 2) {
             TestERC20(token1).mint(address(this), swapAmount / 2 - currentBalance1);
         }
-        
+
         IERC20(token0).approve(address(ROUTER_02), swapAmount / 2);
         IERC20(token1).approve(address(ROUTER_02), swapAmount / 2);
-        
-        // Swap token0 to token1 (generates fees in token0)
+
         ROUTER_02.exactInputSingle(
             IBaseSwapRouter02.ExactInputSingleParams({
                 tokenIn: token0,
@@ -715,8 +616,7 @@ contract CustomUniswapV3LockerTest is Test {
                 sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
             })
         );
-        
-        // Swap token1 to token0 (generates fees in token1)
+
         ROUTER_02.exactInputSingle(
             IBaseSwapRouter02.ExactInputSingleParams({
                 tokenIn: token1,
@@ -729,7 +629,7 @@ contract CustomUniswapV3LockerTest is Test {
             })
         );
     }
-    
+
     struct BalanceSnapshot {
         uint256 dopplerToken0;
         uint256 dopplerToken1;
@@ -740,7 +640,7 @@ contract CustomUniswapV3LockerTest is Test {
         uint256 lockerToken0;
         uint256 lockerToken1;
     }
-    
+
     function _getBalances(address token0, address token1) internal view returns (BalanceSnapshot memory) {
         return BalanceSnapshot({
             dopplerToken0: IERC20(token0).balanceOf(DOPPLER_FEE_RECEIVER),
@@ -753,7 +653,7 @@ contract CustomUniswapV3LockerTest is Test {
             lockerToken1: IERC20(token1).balanceOf(address(locker))
         });
     }
-    
+
     function _assertFeeDistribution(
         BalanceSnapshot memory before,
         BalanceSnapshot memory afterSnapshot,
@@ -766,7 +666,7 @@ contract CustomUniswapV3LockerTest is Test {
         assertEq(afterSnapshot.lockerToken0, 0, "Locker should not hold any token0");
         assertEq(afterSnapshot.lockerToken1, 0, "Locker should not hold any token1");
     }
-    
+
     function _assertToken0Distribution(
         BalanceSnapshot memory before,
         BalanceSnapshot memory afterSnapshot,
@@ -776,17 +676,15 @@ contract CustomUniswapV3LockerTest is Test {
         uint256 expectedDopplerFee0 = collectedAmount0 * locker.DOPPLER_FEE_WAD() / 1e18;
         uint256 expectedCreatorFee0 = collectedAmount0 * creatorFee / 1e18;
         uint256 expectedIntegratorFee0 = 0;
-        
+
         if (collectedAmount0 > expectedDopplerFee0 + expectedCreatorFee0) {
             expectedIntegratorFee0 = collectedAmount0 - expectedDopplerFee0 - expectedCreatorFee0;
         }
-        
+
         assertEq(
-            afterSnapshot.dopplerToken0 - before.dopplerToken0,
-            expectedDopplerFee0,
-            "Incorrect Doppler fee for token0"
+            afterSnapshot.dopplerToken0 - before.dopplerToken0, expectedDopplerFee0, "Incorrect Doppler fee for token0"
         );
-        
+
         if (creatorFee > 0) {
             assertEq(
                 afterSnapshot.creatorToken0 - before.creatorToken0,
@@ -800,7 +698,7 @@ contract CustomUniswapV3LockerTest is Test {
                 "Creator should not receive token0 fees when fee is 0"
             );
         }
-        
+
         assertEq(
             afterSnapshot.integratorToken0 - before.integratorToken0,
             expectedIntegratorFee0,
@@ -810,7 +708,7 @@ contract CustomUniswapV3LockerTest is Test {
         uint256 totalDistributed0 = expectedDopplerFee0 + expectedCreatorFee0 + expectedIntegratorFee0;
         assertEq(totalDistributed0, collectedAmount0, "Total token0 distributed should equal collected");
     }
-    
+
     function _assertToken1Distribution(
         BalanceSnapshot memory before,
         BalanceSnapshot memory afterSnapshot,
@@ -820,17 +718,15 @@ contract CustomUniswapV3LockerTest is Test {
         uint256 expectedDopplerFee1 = collectedAmount1 * locker.DOPPLER_FEE_WAD() / 1e18;
         uint256 expectedCreatorFee1 = collectedAmount1 * creatorFee / 1e18;
         uint256 expectedIntegratorFee1 = 0;
-        
+
         if (collectedAmount1 > expectedDopplerFee1 + expectedCreatorFee1) {
             expectedIntegratorFee1 = collectedAmount1 - expectedDopplerFee1 - expectedCreatorFee1;
         }
-        
+
         assertEq(
-            afterSnapshot.dopplerToken1 - before.dopplerToken1,
-            expectedDopplerFee1,
-            "Incorrect Doppler fee for token1"
+            afterSnapshot.dopplerToken1 - before.dopplerToken1, expectedDopplerFee1, "Incorrect Doppler fee for token1"
         );
-        
+
         if (creatorFee > 0) {
             assertEq(
                 afterSnapshot.creatorToken1 - before.creatorToken1,
@@ -844,7 +740,7 @@ contract CustomUniswapV3LockerTest is Test {
                 "Creator should not receive token1 fees when fee is 0"
             );
         }
-        
+
         assertEq(
             afterSnapshot.integratorToken1 - before.integratorToken1,
             expectedIntegratorFee1,
@@ -854,7 +750,7 @@ contract CustomUniswapV3LockerTest is Test {
         uint256 totalDistributed1 = expectedDopplerFee1 + expectedCreatorFee1 + expectedIntegratorFee1;
         assertEq(totalDistributed1, collectedAmount1, "Total token1 distributed should equal collected");
     }
-    
+
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
         return this.onERC721Received.selector;
     }
