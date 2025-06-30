@@ -14,6 +14,8 @@ interface ICustomUniswapV3Migrator is ILiquidityMigrator {
     error InvalidSwapCallbackCaller();
     error OnlySelf();
     error InvalidFallbackLiquidityMigrator();
+    error InvalidTokenOrder();
+    error InvalidSqrtPriceX96();
 
     function fallbackLiquidityMigrator() external view returns (ILiquidityMigrator);
 

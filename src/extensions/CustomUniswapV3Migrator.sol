@@ -119,8 +119,16 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         address token1,
         address recipient
     ) external payable onlyAirlock returns (uint256) {
-        if (token0 == address(0)) token0 = address(WETH);
-        if (token0 > token1) (token0, token1) = (token1, token0);
+        require(token0 < token1, InvalidTokenOrder());
+
+        if (token0 == address(0)) {
+            token0 = address(WETH);
+
+            if (token0 > token1) {
+                sqrtPriceX96 = _invertSqrtPriceX96(sqrtPriceX96);
+                (token0, token1) = (token1, token0);
+            }
+        }
 
         address pool = FACTORY.getPool(token0, token1, FEE_TIER);
         require(pool != address(0), PoolDoesNotExist());
@@ -150,39 +158,8 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         address recipient
     ) public onlySelf returns (uint256) {
         _rebalance(pool, token0, token1, sqrtPriceX96);
-        (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
 
-        int24 tickSpacing = FACTORY.feeAmountTickSpacing(FEE_TIER);
-        (int24 tickLower, int24 tickUpper, bool isOneSided) = _calculateValidTicks(pool, sqrtPriceX96, tickSpacing);
-
-        uint128 liquidity;
-
-        // if we have depleted our balance and the position is not one-sided, we just skip minting
-        if (isOneSided || (balance0 != 0 && balance1 != 0)) {
-            ERC20(token0).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance0);
-            ERC20(token1).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance1);
-
-            INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager.MintParams({
-                token0: token0,
-                token1: token1,
-                fee: FEE_TIER,
-                tickLower: tickLower,
-                tickUpper: tickUpper,
-                amount0Desired: balance0,
-                amount1Desired: balance1,
-                amount0Min: 0,
-                amount1Min: 0,
-                recipient: address(CUSTOM_V3_LOCKER),
-                deadline: block.timestamp
-            });
-
-            uint256 tokenId;
-
-            (tokenId, liquidity,,) = NONFUNGIBLE_POSITION_MANAGER.mint(mintParams);
-
-            CUSTOM_V3_LOCKER.register(tokenId, poolFeeReceivers[pool], recipient);
-        }
-
+        uint128 liquidity = _mintPosition(token0, token1, poolFeeReceivers[pool], recipient);
         _refundDustAndRevokeAllowances(token0, token1, recipient);
 
         return liquidity;
@@ -197,6 +174,54 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     ) external onlyOwner {
         fallbackLiquidityMigrator = liquidityMigrator;
         emit FallbackLiquidityMigratorSet(liquidityMigrator);
+    }
+
+    /**
+     * @notice Mints a new liquidity position
+     * @dev This mints a full-range position with all available balance of both tokens
+     *      If there's no balance of either token, it doesn't mint anything instead of
+     *      minting a one-sided position.
+     * @param token0 Address of token0
+     * @param token1 Address of token1
+     * @param integratorFeeReceiver Address of the integrator fee receiver
+     * @param recipient Address receiving the liquidity pool tokens i.e. timelock
+     * @return liquidity The amount of liquidity minted
+     */
+    function _mintPosition(
+        address token0,
+        address token1,
+        address integratorFeeReceiver,
+        address recipient
+    ) internal returns (uint128 liquidity) {
+        (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
+
+        if (balance0 == 0 || balance1 == 0) {
+            return 0;
+        }
+
+        ERC20(token0).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance0);
+        ERC20(token1).safeApprove(address(NONFUNGIBLE_POSITION_MANAGER), balance1);
+
+        int24 tickSpacing = FACTORY.feeAmountTickSpacing(FEE_TIER);
+
+        uint256 tokenId;
+        (tokenId, liquidity,,) = NONFUNGIBLE_POSITION_MANAGER.mint(
+            INonfungiblePositionManager.MintParams({
+                token0: token0,
+                token1: token1,
+                fee: FEE_TIER,
+                tickLower: TickMath.minUsableTick(tickSpacing),
+                tickUpper: TickMath.maxUsableTick(tickSpacing),
+                amount0Desired: balance0,
+                amount1Desired: balance1,
+                amount0Min: 0,
+                amount1Min: 0,
+                recipient: address(CUSTOM_V3_LOCKER),
+                deadline: block.timestamp
+            })
+        );
+
+        CUSTOM_V3_LOCKER.register(tokenId, integratorFeeReceiver, recipient);
     }
 
     /**
@@ -238,60 +263,6 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         }
 
         IUniswapV3Pool(pool).swap(address(this), zeroForOne, int256(amount), sqrtPriceLimitX96, "");
-    }
-
-    /**
-     * @notice Calculates valid tick boundaries for a concentrated liquidity position
-     * @dev Creates a narrow range centered around the wanted price, ensuring ticks are:
-     *      1. Divisible by tickSpacing
-     *      2. Within the usable tick range
-     *      3. Properly ordered (lower < upper)
-     *      4. The range includes the wanted price to ensure liquidity is active
-     *      Handles edge cases at price extremes by creating a minimal valid range.
-     * @param pool The pool to calculate the valid ticks for
-     * @param tickSpacing The tick spacing of the pool
-     * @return tickLower The lower tick boundary for the position
-     * @return tickUpper The upper tick boundary for the position
-     * @return isOneSided Whether the position is one-sided
-     */
-    function _calculateValidTicks(
-        address pool,
-        uint160 targetSqrtPriceX96,
-        int24 tickSpacing
-    ) internal view returns (int24 tickLower, int24 tickUpper, bool isOneSided) {
-        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-
-        int24 priceImpliedTick = TickMath.getTickAtSqrtPrice(targetSqrtPriceX96);
-        uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(priceImpliedTick);
-
-        int24 compressed = priceImpliedTick / tickSpacing;
-        if (priceImpliedTick < 0 && priceImpliedTick % tickSpacing != 0) compressed--;
-        int24 divisibleTick = compressed * tickSpacing;
-
-        if (targetSqrtPriceX96 != boundaryPrice) {
-            tickLower = divisibleTick;
-            tickUpper = divisibleTick + tickSpacing;
-        } else {
-            tickLower = divisibleTick - tickSpacing;
-            tickUpper = divisibleTick + tickSpacing;
-        }
-
-        int24 minUsableTick = TickMath.minUsableTick(tickSpacing);
-        int24 maxUsableTick = TickMath.maxUsableTick(tickSpacing);
-
-        if (tickUpper > maxUsableTick) {
-            tickUpper = maxUsableTick;
-            tickLower = tickUpper - tickSpacing;
-        }
-        if (tickLower < minUsableTick) {
-            tickLower = minUsableTick;
-            tickUpper = tickLower + tickSpacing;
-        }
-
-        uint160 sqrtPriceLowerX96 = TickMath.getSqrtPriceAtTick(tickLower);
-        uint160 sqrtPriceUpperX96 = TickMath.getSqrtPriceAtTick(tickUpper);
-
-        isOneSided = sqrtPriceX96 <= sqrtPriceLowerX96 || sqrtPriceX96 >= sqrtPriceUpperX96;
     }
 
     /**
@@ -350,6 +321,17 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         }
 
         return fallbackLiquidityMigrator.migrate(sqrtPriceX96, token0, token1, recipient);
+    }
+
+    /**
+     * @notice Inverses a sqrtPriceX96 value
+     * @param sqrtPriceX96 The sqrtPriceX96 value to invert
+     * @return invertedSqrtPriceX96 The inverted sqrtPriceX96 value
+     */
+    function _invertSqrtPriceX96(
+        uint160 sqrtPriceX96
+    ) internal pure returns (uint160) {
+        return TickMath.getSqrtPriceAtTick(-1 * TickMath.getTickAtSqrtPrice(sqrtPriceX96));
     }
 
     /**

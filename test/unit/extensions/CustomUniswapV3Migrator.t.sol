@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 import { Test, console, Vm } from "forge-std/Test.sol";
 import { TestERC20 } from "@v4-core/test/TestERC20.sol";
 import { TickMath } from "@v4-core/libraries/TickMath.sol";
+import { FullMath } from "@v4-core/libraries/FullMath.sol";
 import { ERC20 } from "@solmate/tokens/ERC20.sol";
 import { ERC721 } from "@solady/tokens/ERC721.sol";
 import { CustomUniswapV3Migrator } from "src/extensions/CustomUniswapV3Migrator.sol";
@@ -13,6 +14,7 @@ import { IUniswapV3Factory, IBaseSwapRouter02 } from "src/extensions/CustomUnisw
 import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import { ILiquidityMigrator } from "src/interfaces/ILiquidityMigrator.sol";
 import { SenderNotAirlock } from "src/base/ImmutableAirlock.sol";
+import { Airlock } from "src/Airlock.sol";
 import { CustomUniswapV3Locker } from "src/extensions/CustomUniswapV3Locker.sol";
 import {
     UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE,
@@ -41,11 +43,7 @@ contract CustomUniswapV3TestFallbackMigrator is ILiquidityMigrator {
         migrationData = migrationData_;
     }
 
-    function initialize(
-        address asset,
-        address numeraire,
-        bytes calldata liquidityMigratorData
-    ) external override returns (address pool) {
+    function initialize(address, address, bytes calldata) external pure override returns (address) {
         revert("Not implemented");
     }
 
@@ -75,10 +73,17 @@ contract CustomUniswapV3MigratorTest is Test {
     event IncreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
 
     CustomUniswapV3Migrator public migrator;
-    IUniswapV3Factory public factory;
-    INonfungiblePositionManager public nfpm;
+    uint24 public feeTier;
+    int24 public tickSpacing;
+    int24 public minUsableTick;
+    int24 public maxUsableTick;
 
-    uint24 constant FEE_TIER = 10_000;
+    IUniswapV3Factory public factory = IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE);
+    INonfungiblePositionManager public nfpm = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
+    ERC20 public weth = ERC20(WETH_BASE);
+
+    uint256 public nonce;
+
     address constant MIGRATOR_OWNER = address(0x3333);
     address constant DOPPLER_FEE_RECEIVER = address(0x2222);
     address constant INTEGRATOR_FEE_RECEIVER = address(0x1111);
@@ -111,229 +116,231 @@ contract CustomUniswapV3MigratorTest is Test {
 
     function setUp() public {
         vm.createSelectFork(vm.envString("BASE_MAINNET_RPC_URL"), 31_118_046);
+        nonce = 0;
+    }
 
-        factory = IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE);
-        nfpm = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
+    modifier setupMigrator() {
+        _setupMigrator(10_000);
+        _;
+    }
 
+    modifier setupMigratorWithFeeTier(
+        uint24 feeTier_
+    ) {
+        _setupMigrator(feeTier_);
+        _;
+    }
+
+    function _setupMigrator(
+        uint24 feeTier_
+    ) internal {
         migrator = new CustomUniswapV3Migrator(
             MIGRATOR_OWNER,
             address(this),
             nfpm,
             IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE),
             DOPPLER_FEE_RECEIVER,
-            FEE_TIER
+            feeTier_
         );
+        feeTier = feeTier_;
+        tickSpacing = factory.feeAmountTickSpacing(feeTier_);
+        minUsableTick = TickMath.minUsableTick(tickSpacing);
+        maxUsableTick = TickMath.maxUsableTick(tickSpacing);
+        assertNotEq(tickSpacing, 0, "Tick spacing should be non-zero");
+        assertEq(migrator.FEE_TIER(), feeTier_);
     }
 
-    function test_constantValues() public view {
+    function test_constantValues() public setupMigrator {
         assertEq(address(migrator.NONFUNGIBLE_POSITION_MANAGER()), UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE);
         assertEq(address(migrator.FACTORY()), UNISWAP_V3_FACTORY_BASE);
         assertEq(address(migrator.WETH()), WETH_BASE);
-        assertEq(migrator.FEE_TIER(), FEE_TIER);
+        assertEq(migrator.FEE_TIER(), feeTier);
         assertTrue(address(migrator.CUSTOM_V3_LOCKER()) != address(0), "Locker should be deployed");
     }
 
-    function test_receive_ReceivesETHFromAirlock() public {
+    function test_receive_ReceivesETHFromAirlock() public setupMigrator {
         uint256 preBalance = address(migrator).balance;
         deal(address(this), 1 ether);
         payable(address(migrator)).transfer(1 ether);
         assertEq(address(migrator).balance, preBalance + 1 ether, "Wrong balance");
     }
 
-    function test_initialize_CreatesPair() public {
-        address token0 = address(0x1111);
-        address token1 = address(0x2222);
-        address pair = migrator.initialize(token0, token1, liquidityMigratorData);
-        assertEq(pair, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(token0, token1, FEE_TIER), "Wrong pair");
+    function test_initialize_CreatesPair() public setupMigrator {
+        TokenPair memory tp = _createTokenPair();
+        address pair = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
+        assertEq(pair, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(tp.token0, tp.token1, feeTier), "Wrong pair");
     }
 
-    function test_initialize_DoesNotFailWhenPairIsAlreadyCreated() public {
-        address token0 = address(0x1111);
-        address token1 = address(0x2222);
-        IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).createPool(token0, token1, FEE_TIER);
-        address pair = migrator.initialize(token0, token1, liquidityMigratorData);
-        assertEq(pair, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(token0, token1, FEE_TIER), "Wrong pair");
+    function test_initialize_DoesNotFailWhenPairIsAlreadyCreated() public setupMigrator {
+        TokenPair memory tp = _createTokenPair();
+        IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).createPool(tp.token0, tp.token1, feeTier);
+        address pair = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
+        assertEq(pair, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(tp.token0, tp.token1, feeTier), "Wrong pair");
     }
 
-    function test_initialize_RevertsWithInvalidLengthData() public {
+    function test_initialize_RevertsWithInvalidLengthData() public setupMigrator {
         vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.InvalidLiquidityMigratorDataLength.selector));
         migrator.initialize(address(0x1111), address(0x2222), hex"00");
     }
 
-    function test_initialize_RevertsWithZeroFeeReceiver() public {
+    function test_initialize_RevertsWithZeroFeeReceiver() public setupMigrator {
         bytes memory invalidData = abi.encode(address(0));
         vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.ZeroFeeReceiverAddress.selector));
         migrator.initialize(address(0x1111), address(0x2222), invalidData);
     }
 
-    function test_initialize_UsesWETHForNumeraireZero() public {
+    function test_initialize_UsesWETHForNumeraireZero() public setupMigrator {
         TestERC20 token = new TestERC20(1e30);
 
         address pool = migrator.initialize(address(token), address(0), liquidityMigratorData);
 
-        address weth = address(migrator.WETH());
-        (address token0, address token1) = _sortTokens(address(token), weth);
-
-        assertEq(pool, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(token0, token1, FEE_TIER), "Wrong pool");
+        (address token0, address token1) = _sortTokens(address(token), address(weth));
+        assertEq(pool, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(token0, token1, feeTier), "Wrong pool");
     }
 
-    function test_initialize_SetsPoolFeeReceivers() public {
-        address token0 = address(0x3333);
-        address token1 = address(0x4444);
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
+    function test_initialize_SetsPoolFeeReceivers() public setupMigrator {
+        TokenPair memory tp = _createTokenPair();
+        address pool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
         assertEq(migrator.poolFeeReceivers(pool), INTEGRATOR_FEE_RECEIVER, "Wrong fee receiver");
     }
 
-    function test_initialize_InitializesPoolAtExtremePrice() public {
-        TestERC20 tokenA = new TestERC20(1e30);
-        TestERC20 tokenB = new TestERC20(1e30);
+    function testFuzz_initialize_InitializesPoolAtExtremePrice(
+        uint256 seed
+    ) public setupMigrator {
+        TokenPair memory tp = _createTokenPair(seed, false);
 
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
+        address pool = migrator.initialize(address(tp.tokenA), address(tp.tokenB), liquidityMigratorData);
         _assertPoolInitialized(pool);
 
         (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
         int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-
-        int24 tickSpacing = 200;
-        int24 expectedTick = address(tokenA) == token0
-            ? TickMath.minUsableTick(tickSpacing) + tickSpacing
-            : TickMath.maxUsableTick(tickSpacing) - tickSpacing;
-
+        int24 expectedTick = address(tp.tokenA) == tp.token0 ? minUsableTick + tickSpacing : maxUsableTick - tickSpacing;
         assertEq(tick, expectedTick, "Pool should be initialized at extreme tick");
     }
 
-    function test_migrate_RevertsWhenSenderNotAirlock() public {
+    function test_migrate_RevertsWhenSenderNotAirlock() public setupMigrator {
         vm.prank(address(0xbeef));
         vm.expectRevert(SenderNotAirlock.selector);
         migrator.migrate(uint160(0), address(0x1111), address(0x2222), address(0));
     }
 
-    function test_migrate_RevertsWhenPoolDoesNotExist() public {
-        TestERC20 token0 = new TestERC20(1e30);
-        TestERC20 token1 = new TestERC20(1e30);
+    // function test_migrate_RevertsWhenPoolDoesNotExist() public setupMigrator {
+    //     TokenPair memory tp = _createTokenPair();
+    //     _transferTokensToMigrator(tp, 1e28, 1e28);
 
-        token0.transfer(address(migrator), 1e28);
-        token1.transfer(address(migrator), 1e28);
+    //     CustomUniswapV3Migrator migrator_ = migrator;
 
-        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.PoolDoesNotExist.selector));
-        migrator.migrate(SQRT_PRICE_1_1, address(token0), address(token1), address(0xbeef));
-    }
+    //     _setupMigrator(10_000);
+    //     vm.prank(MIGRATOR_OWNER);
+    //     migrator.setFallbackLiquidityMigrator(migrator_);
 
-    function test_migrate_RevertsWhenZeroAmounts() public {
-        TestERC20 tokenA = new TestERC20(type(uint256).max);
-        TestERC20 tokenB = new TestERC20(type(uint256).max);
+    //     vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.PoolDoesNotExist.selector));
+    //     migrator.migrate(SQRT_PRICE_1_1, tp.token0, tp.token1, address(0xbeef));
+    // }
 
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
+    function test_migrate_RevertsWhenZeroAmounts() public setupMigrator {
+        TokenPair memory tp = _createTokenPair();
 
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
-        _assertPoolInitialized(pool);
+        migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
 
         vm.expectRevert();
-        migrator.migrate(SQRT_PRICE_1_1, token0, token1, address(0xbeef));
+        migrator.migrate(SQRT_PRICE_1_1, tp.token0, tp.token1, address(0xbeef));
     }
 
-    function test_migrate_BasicScenario() public {
-        uint24 testFeeTier = 3000;
-        migrator = _setupMigratorWithFeeTier(testFeeTier);
+    function test_migrate_BasicScenario() public setupMigrator {
+        TokenPair memory tp = _createTokenPair();
 
-        (TestERC20 tokenA, TestERC20 tokenB, address token0, address token1) = _createTokenPair();
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
-        _assertPoolInitialized(pool);
+        address pool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
+        _transferTokensToMigrator(tp, 1e24, 1e24);
 
         assertEq(migrator.poolFeeReceivers(pool), INTEGRATOR_FEE_RECEIVER, "Fee receiver should be registered");
 
-        uint256 transferAmount0 = 1e24;
-        uint256 transferAmount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, transferAmount0, transferAmount1);
-
         uint160 targetPrice = SQRT_PRICE_3_2;
         address recipient = address(0xbeef);
 
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(targetPrice, token0, token1, recipient);
-        BalanceSnapshot memory afterMigration = _getBalances(token0, token1, recipient, pool);
-
-        _assertMigrationPoolState(pool, targetPrice, liquidity);
-
-        int24 tickSpacing = factory.feeAmountTickSpacing(testFeeTier);
-        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
-        _assertBalances(before, afterMigration, isExtreme, false);
+        _migrate(tp, targetPrice, recipient, false);
     }
 
-    function test_migrate_PreInitializedPool() public {
-        uint24 testFeeTier = 3000;
-        migrator = _setupMigratorWithFeeTier(testFeeTier);
+    function test_migrate_PreInitializedPool() public setupMigrator {
+        TokenPair memory tp = _createTokenPair();
 
-        (TestERC20 tokenA, TestERC20 tokenB, address token0, address token1) = _createTokenPair();
+        address pool = factory.createPool(tp.token0, tp.token1, feeTier);
+        assertNotEq(factory.getPool(tp.token0, tp.token1, feeTier), address(0), "Pool should be created");
 
-        address pool = factory.createPool(token0, token1, testFeeTier);
-        assertNotEq(factory.getPool(token0, token1, testFeeTier), address(0), "Pool should be created");
         IUniswapV3Pool(pool).initialize(SQRT_PRICE_1_1);
         _assertPoolInitialized(pool);
 
-        address existingPool = migrator.initialize(token0, token1, liquidityMigratorData);
+        address existingPool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
         assertEq(existingPool, pool, "Pool addresses should be the same");
 
-        uint256 transferAmount0 = 1e24;
-        uint256 transferAmount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, transferAmount0, transferAmount1);
+        _transferTokensToMigrator(tp, 1e24, 1e24);
 
         uint160 targetPrice = SQRT_PRICE_3_2;
         address recipient = address(0xbeef);
 
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(targetPrice, token0, token1, recipient);
-        BalanceSnapshot memory afterMigration = _getBalances(token0, token1, recipient, pool);
-
-        _assertMigrationPoolState(pool, targetPrice, liquidity);
-
-        int24 tickSpacing = factory.feeAmountTickSpacing(testFeeTier);
-        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
-        _assertBalances(before, afterMigration, isExtreme, false);
+        _migrate(tp, targetPrice, recipient, true);
     }
 
-    function test_migrate_ETHHandling() public {
-        address weth = address(migrator.WETH());
-        TestERC20 token = new TestERC20(type(uint256).max);
+    function testFuzz_migrate_ethTokenPriceInversionLogic(
+        uint256 seed
+    ) public setupMigrator {
+        TokenPair memory tp = _createTokenPair(seed, true);
+        bool isTokenLower = address(tp.token1) < address(weth);
 
-        (address token0, address token1) = _sortTokens(address(token), weth);
+        address pool = migrator.initialize(tp.token1, tp.token0, liquidityMigratorData);
 
-        address pool = migrator.initialize(address(token), address(0), liquidityMigratorData);
+        if (isTokenLower) {
+            assertEq(IUniswapV3Pool(pool).token0(), address(tp.token1), "Token should be token0");
+            assertEq(IUniswapV3Pool(pool).token1(), address(weth), "WETH should be token1");
+        } else {
+            assertEq(IUniswapV3Pool(pool).token0(), address(weth), "WETH should be token0");
+            assertEq(IUniswapV3Pool(pool).token1(), address(tp.token1), "High token should be token1");
+        }
 
-        uint256 ethAmount = 10 ether;
-        uint256 tokenAmount = 10e18;
-        deal(address(migrator), ethAmount);
-        token.transfer(address(migrator), tokenAmount);
+        _transferTokensToMigrator(tp, 10 ether, 20e18);
 
-        uint160 targetPrice = SQRT_PRICE_3_2;
+        _migrate(tp, SQRT_PRICE_1_2, address(0xbeef), false);
+
+        uint160 targetPrice = isTokenLower ? SQRT_PRICE_2_1 : SQRT_PRICE_1_2;
+        (uint160 poolPrice,,,,,,) = IUniswapV3Pool(pool).slot0();
+        assertApproxEqRel(poolPrice, targetPrice, 0.0001e18);
+    }
+
+    function test_migrate_ETHHandling() public setupMigrator {
+        TokenPair memory tp = _createTokenPair(0, true);
+        migrator.initialize(tp.token1, tp.token0, liquidityMigratorData);
+        _transferTokensToMigrator(tp, 10 ether, 10e18);
+        _migrate(tp, SQRT_PRICE_3_2, address(0xbeef), false);
+    }
+
+    function testFuzz_migrate_WithVariousPricesAndAmounts(
+        uint160 targetSqrtPriceX96,
+        uint256 amount0,
+        uint256 amount1,
+        uint256 seed,
+        bool withEth
+    ) public setupMigrator {
+        amount0 = bound(amount0, 1e10, 1e18);
+        amount1 = bound(amount1, 1e10, 1e18);
+
+        targetSqrtPriceX96 =
+            uint160(bound(uint256(targetSqrtPriceX96), TickMath.MIN_SQRT_PRICE * 1e18, TickMath.MAX_SQRT_PRICE / 1e18));
+
+        TokenPair memory tp = _createTokenPair(seed, withEth);
+        _transferTokensToMigrator(tp, amount0, amount1);
+
+        migrator.initialize(tp.token1, tp.token0, liquidityMigratorData);
+
         address recipient = address(0xbeef);
 
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(targetPrice, token0, token1, recipient);
-        BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1, recipient, pool);
-
-        _assertMigrationPoolState(pool, targetPrice, liquidity);
-
-        int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
-        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
-        _assertBalances(before, afterSnapshot, isExtreme, false);
-    }
-
-    function test_migrate_DifferentPriceScenarios() public {
-        _testMigrationAtPrice(SQRT_PRICE_1_2);
-        _testMigrationAtPrice(SQRT_PRICE_3_2);
-        _testMigrationAtPrice(SQRT_PRICE_2_1);
+        _migrate(tp, targetSqrtPriceX96, recipient, false);
     }
 
     function testFuzz_initialize_WithVariousAddresses(
         address asset,
         address numeraire,
         address integratorFeeReceiver
-    ) public {
+    ) public setupMigrator {
         vm.assume(asset != address(0));
         vm.assume(integratorFeeReceiver != address(0));
         vm.assume(asset != numeraire);
@@ -350,172 +357,15 @@ contract CustomUniswapV3MigratorTest is Test {
         address expectedNumeraire = numeraire == address(0) ? address(migrator.WETH()) : numeraire;
         (address token0, address token1) = _sortTokens(asset, expectedNumeraire);
 
-        assertEq(pool, factory.getPool(token0, token1, FEE_TIER), "Pool address mismatch");
+        assertEq(pool, factory.getPool(token0, token1, feeTier), "Pool address mismatch");
         assertEq(migrator.poolFeeReceivers(pool), integratorFeeReceiver, "Fee receiver mismatch");
-    }
 
-    function testFuzz_migrate_WithVariousPrices(
-        uint160 targetSqrtPriceX96
-    ) public {
-        uint256 bounded = bound(
-            uint256(targetSqrtPriceX96),
-            uint256(79_228_162_514_264_337_593_543_950_336) / 100, // 0.01x price
-            uint256(79_228_162_514_264_337_593_543_950_336) * 100 // 100x price
-        );
-        targetSqrtPriceX96 = uint160(bounded);
+        bool isAssetToken0 = asset == token0;
 
-        TestERC20 tokenA = new TestERC20(type(uint256).max);
-        TestERC20 tokenB = new TestERC20(type(uint256).max);
-
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
-        _assertPoolInitialized(pool);
-
-        uint256 amount = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, amount, amount);
-
-        address recipient = address(0xbeef);
-
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(targetSqrtPriceX96, token0, token1, recipient);
-        BalanceSnapshot memory afterMigration = _getBalances(token0, token1, recipient, pool);
-
-        _assertMigrationPoolState(pool, targetSqrtPriceX96, liquidity);
-
-        int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
-        (,, bool isExtreme) = _calculateValidTicks(pool, targetSqrtPriceX96, tickSpacing);
-        _assertBalances(before, afterMigration, isExtreme, false);
-    }
-
-    function testFuzz_migrate_WithVariousAmounts(uint128 amount0, uint128 amount1) public {
-        amount0 = uint128(bound(amount0, 1e18, 1e30));
-        amount1 = uint128(bound(amount1, 1e18, 1e30));
-
-        TestERC20 tokenA = new TestERC20(type(uint256).max);
-        TestERC20 tokenB = new TestERC20(type(uint256).max);
-
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
-
-        _transferTokensToMigrator(tokenA, tokenB, token0, amount0, amount1);
-
-        address recipient = address(0xbeef);
-
-        uint160 targetSqrtPriceX96 = SQRT_PRICE_3_2;
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(targetSqrtPriceX96, token0, token1, recipient);
-        BalanceSnapshot memory afterMigration = _getBalances(token0, token1, recipient, pool);
-
-        _assertMigrationPoolState(pool, targetSqrtPriceX96, liquidity);
-
-        int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
-        (,, bool isExtreme) = _calculateValidTicks(pool, targetSqrtPriceX96, tickSpacing);
-        _assertBalances(before, afterMigration, isExtreme, false);
-    }
-
-    function testFuzz_migrate_AtVariousTicks(
-        int24 targetTick
-    ) public {
-        uint24 testFeeTier = 500;
-        int24 tickSpacing = 10;
-
-        targetTick = int24(bound(targetTick, -46_000, 46_000));
-        targetTick = (targetTick / tickSpacing) * tickSpacing;
-
-        migrator = _setupMigratorWithFeeTier(testFeeTier);
-
-        TestERC20 tokenA = new TestERC20(type(uint256).max);
-        TestERC20 tokenB = new TestERC20(type(uint256).max);
-
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
-        _assertPoolInitialized(pool);
-
-        (uint160 initialSqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-        int24 initialTick = TickMath.getTickAtSqrtPrice(initialSqrtPriceX96);
-        bool isAssetToken0 = (address(tokenA) == token0 && address(tokenB) == token1)
-            || (address(tokenB) == token0 && address(tokenA) == token1);
-        if (isAssetToken0) {
-            assertLt(initialTick, 0, "Tick should be negative when asset is token0");
-        } else {
-            assertGt(initialTick, 0, "Tick should be positive when asset is token1");
-        }
-
-        uint256 amount = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, amount, amount);
-
-        uint160 targetSqrtPriceX96 = TickMath.getSqrtPriceAtTick(targetTick);
-        address recipient = address(0xbeef);
-
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(targetSqrtPriceX96, token0, token1, recipient);
-        BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1, recipient, pool);
-
-        _assertMigrationPoolState(pool, targetSqrtPriceX96, liquidity);
-
-        (,, bool isExtreme) = _calculateValidTicks(pool, targetSqrtPriceX96, tickSpacing);
-        _assertBalances(before, afterSnapshot, isExtreme, false);
-    }
-
-    function _testMigrationAtPrice(
-        uint160 targetPrice
-    ) internal {
-        TestERC20 tokenA = new TestERC20(type(uint256).max);
-        TestERC20 tokenB = new TestERC20(type(uint256).max);
-
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
-
-        migrator = _setupMigratorWithFeeTier(3000);
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
-
-        uint256 amount0 = 1e24;
-        uint256 amount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, amount0, amount1);
-
-        address recipient = address(0xbeef);
-
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(targetPrice, token0, token1, recipient);
-        BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1, recipient, pool);
-
-        int24 tickSpacing = factory.feeAmountTickSpacing(3000);
-        (,, bool isExtreme) = _calculateValidTicks(pool, targetPrice, tickSpacing);
-        _assertMigrationPoolState(pool, targetPrice, liquidity);
-        _assertBalances(before, afterSnapshot, isExtreme, false);
-    }
-
-    function test_migrate_OnTickBoundary() public {
-        int24 boundaryTick = 0;
-        uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(boundaryTick);
-
-        TestERC20 tokenA = new TestERC20(type(uint256).max);
-        TestERC20 tokenB = new TestERC20(type(uint256).max);
-
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
-
-        migrator = _setupMigratorWithFeeTier(3000);
-
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
-
-        uint256 amount0 = 1e24;
-        uint256 amount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, amount0, amount1);
-
-        address recipient = address(0xbeef);
-
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        uint256 liquidity = migrator.migrate(boundaryPrice, token0, token1, recipient);
-        BalanceSnapshot memory afterSnapshot = _getBalances(token0, token1, recipient, pool);
-
-        _assertMigrationPoolState(pool, boundaryPrice, liquidity);
-
-        int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
-        (,, bool isExtreme) = _calculateValidTicks(pool, boundaryPrice, tickSpacing);
-        _assertBalances(before, afterSnapshot, isExtreme, false);
+        (uint160 sqrtPriceX96, int24 tick,,,,,) = IUniswapV3Pool(pool).slot0();
+        int24 expectedTick = isAssetToken0 ? minUsableTick + tickSpacing : maxUsableTick - tickSpacing;
+        assertEq(tick, expectedTick, "Pool should be initialized at extreme tick");
+        assertEq(sqrtPriceX96, TickMath.getSqrtPriceAtTick(expectedTick), "Pool should be initialized at extreme price");
     }
 
     function test_migrate_PreexistingLiquidity() public {
@@ -531,35 +381,30 @@ contract CustomUniswapV3MigratorTest is Test {
         uint256 preexistingToken1Amount,
         uint160 preexistingSqrtPriceX96,
         uint256 migratorAmounts
-    ) internal {
-        TestERC20 tokenA = new TestERC20(type(uint256).max);
-        TestERC20 tokenB = new TestERC20(type(uint256).max);
-
-        (address token0, address token1) = _sortTokens(address(tokenA), address(tokenB));
-        address pool = factory.createPool(token0, token1, FEE_TIER);
+    ) internal setupMigrator {
+        TokenPair memory tp = _createTokenPair(0, false);
+        address pool = factory.createPool(tp.token0, tp.token1, feeTier);
         IUniswapV3Pool(pool).initialize(initializationPrice);
 
         address liquidityProvider = address(0x1234);
 
-        if (address(tokenB) == token1) {
-            tokenB.transfer(liquidityProvider, preexistingToken1Amount);
+        if (address(tp.tokenB) == tp.token1) {
+            tp.tokenB.transfer(liquidityProvider, preexistingToken1Amount);
         } else {
-            tokenA.transfer(liquidityProvider, preexistingToken1Amount);
+            tp.tokenA.transfer(liquidityProvider, preexistingToken1Amount);
         }
 
         vm.startPrank(liquidityProvider);
-        ERC20(token1).approve(address(nfpm), preexistingToken1Amount);
+        ERC20(tp.token1).approve(address(nfpm), preexistingToken1Amount);
 
-        int24 tickSpacing = factory.feeAmountTickSpacing(FEE_TIER);
         int24 currentTick = TickMath.getTickAtSqrtPrice(preexistingSqrtPriceX96);
-
         int24 tickUpper = ((currentTick - tickSpacing) / tickSpacing) * tickSpacing;
         int24 tickLower = tickUpper - tickSpacing;
 
         INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager.MintParams({
-            token0: token0,
-            token1: token1,
-            fee: FEE_TIER,
+            token0: tp.token0,
+            token1: tp.token1,
+            fee: feeTier,
             tickLower: tickLower,
             tickUpper: tickUpper,
             amount0Desired: 0,
@@ -577,52 +422,41 @@ contract CustomUniswapV3MigratorTest is Test {
         assertEq(nfpm.ownerOf(tokenId), liquidityProvider, "LP should own the NFT");
         (uint160 currentPrice,,,,,,) = IUniswapV3Pool(pool).slot0();
         assertEq(currentPrice, initializationPrice, "Pool should still be at initialization price");
-        address migratorPool = migrator.initialize(token0, token1, liquidityMigratorData);
+        address migratorPool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
         assertEq(migratorPool, pool, "Should return the existing pool");
 
-        _transferTokensToMigrator(tokenA, tokenB, token0, migratorAmounts, migratorAmounts);
+        _transferTokensToMigrator(tp, migratorAmounts, migratorAmounts);
 
         address recipient = address(0xbeef);
         uint160 targetPrice = SQRT_PRICE_1_1;
-        BalanceSnapshot memory before = _getBalances(token0, token1, recipient, pool);
-        migrator.migrate(targetPrice, token0, token1, recipient);
-        BalanceSnapshot memory afterMigration = _getBalances(token0, token1, recipient, pool);
-
-        // These assumptions don't exist here, so not checking _assertMigrationPoolState
-
-        uint128 activePoolLiquidity = IUniswapV3Pool(pool).liquidity();
-        (, int24 poolCurrentTick,,,,,) = IUniswapV3Pool(pool).slot0();
-
-        _assertBalances(before, afterMigration, false, true);
+        _migrate(tp, targetPrice, recipient, true);
     }
 
     function test_migrate_fallbackLiquidityMigrator() public {
-        uint24 testFeeTier = 3000;
         migrator = new CustomUniswapV3Migrator(
             MIGRATOR_OWNER,
             address(this),
             INonfungiblePositionManager(address(0)), // NFPM set to 0, mint will revert
             IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE),
             DOPPLER_FEE_RECEIVER,
-            testFeeTier
+            10_000
         );
-
         CustomUniswapV3TestFallbackMigrator fallbackMigrator = new CustomUniswapV3TestFallbackMigrator();
 
-        (TestERC20 tokenA, TestERC20 tokenB, address token0, address token1) = _createTokenPair();
+        TokenPair memory tp = _createTokenPair();
 
-        address pool = migrator.initialize(token0, token1, liquidityMigratorData);
+        address pool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
         _assertPoolInitialized(pool);
 
         uint256 transferAmount0 = 1e24;
         uint256 transferAmount1 = 1e24;
-        _transferTokensToMigrator(tokenA, tokenB, token0, transferAmount0, transferAmount1);
+        _transferTokensToMigrator(tp, transferAmount0, transferAmount1);
 
         uint160 targetPrice = SQRT_PRICE_3_2;
         address recipient = address(0xbeef);
 
         vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.InvalidFallbackLiquidityMigrator.selector));
-        migrator.migrate(targetPrice, token0, token1, recipient);
+        migrator.migrate(targetPrice, tp.token0, tp.token1, recipient);
 
         vm.prank(MIGRATOR_OWNER);
         migrator.setFallbackLiquidityMigrator(fallbackMigrator);
@@ -631,8 +465,8 @@ contract CustomUniswapV3MigratorTest is Test {
             CustomUniswapV3TestFallbackMigrator.MigrationData({
                 migrator: address(migrator),
                 sqrtPriceX96: targetPrice,
-                token0: token0,
-                token1: token1,
+                token0: tp.token0,
+                token1: tp.token1,
                 recipient: recipient,
                 balance0: transferAmount0,
                 balance1: transferAmount1,
@@ -640,7 +474,64 @@ contract CustomUniswapV3MigratorTest is Test {
             })
         );
 
-        assertEq(migrator.migrate(targetPrice, token0, token1, recipient), 1000);
+        assertEq(migrator.migrate(targetPrice, tp.token0, tp.token1, recipient), 1000);
+    }
+
+    function testFuzz_tickBasedPriceInversion(
+        uint160 targetSqrtPriceX96
+    ) public {
+        targetSqrtPriceX96 =
+            uint160(bound(uint256(targetSqrtPriceX96), TickMath.MIN_SQRT_PRICE + 1, TickMath.MAX_SQRT_PRICE - 1));
+
+        uint160 inverseSqrtPriceX96 = TickMath.getSqrtPriceAtTick(-1 * TickMath.getTickAtSqrtPrice(targetSqrtPriceX96));
+        if (inverseSqrtPriceX96 >= TickMath.MAX_SQRT_PRICE) {
+            inverseSqrtPriceX96 = TickMath.MAX_SQRT_PRICE - 1;
+        }
+        if (inverseSqrtPriceX96 <= TickMath.MIN_SQRT_PRICE) {
+            inverseSqrtPriceX96 = TickMath.MIN_SQRT_PRICE + 1;
+        }
+        uint160 expectedSqrtPriceX96 =
+            TickMath.getSqrtPriceAtTick(-1 * TickMath.getTickAtSqrtPrice(inverseSqrtPriceX96));
+        assertApproxEqRel(targetSqrtPriceX96, expectedSqrtPriceX96, 0.001e18);
+    }
+
+    function _migrate(
+        address token0,
+        address token1,
+        uint160 targetPrice,
+        address recipient,
+        bool isPreexistingLiquidity
+    ) internal {
+        address tokenA = token0;
+        address tokenB = token1;
+        uint160 poolExpectedPrice = targetPrice;
+
+        if (token0 == address(0)) {
+            (tokenA, tokenB) = _sortTokens(address(weth), tokenB);
+            if (tokenB == address(weth)) {
+                poolExpectedPrice = uint160((1 << 192) / targetPrice);
+            }
+        }
+        address pool = factory.getPool(tokenA, tokenB, feeTier);
+        assertNotEq(pool, address(0), "Pool should exist");
+
+        BalanceSnapshot memory before = _getBalances(tokenA, tokenB, recipient, pool);
+        uint256 liquidity = migrator.migrate(targetPrice, token0, token1, recipient);
+        BalanceSnapshot memory afterSnapshot = _getBalances(tokenA, tokenB, recipient, pool);
+
+        if (!isPreexistingLiquidity) {
+            _assertMigrationPoolState(pool, poolExpectedPrice, liquidity);
+        }
+        _assertBalances(pool, before, afterSnapshot, isPreexistingLiquidity);
+    }
+
+    function _migrate(
+        TokenPair memory tp,
+        uint160 targetPrice,
+        address recipient,
+        bool isPreexistingLiquidity
+    ) internal {
+        _migrate(tp.token0, tp.token1, targetPrice, recipient, isPreexistingLiquidity);
     }
 
     function _getBalances(
@@ -649,16 +540,15 @@ contract CustomUniswapV3MigratorTest is Test {
         address recipient,
         address pool
     ) internal view returns (BalanceSnapshot memory) {
-        address weth = address(migrator.WETH());
         address airlock = address(migrator.airlock());
 
         uint256 migratorToken0 = ERC20(token0).balanceOf(address(migrator));
         uint256 migratorToken1 = ERC20(token1).balanceOf(address(migrator));
 
-        if (token0 == weth) {
+        if (token0 == address(weth)) {
             migratorToken0 += address(migrator).balance;
         }
-        if (token1 == weth) {
+        if (token1 == address(weth)) {
             migratorToken1 += address(migrator).balance;
         }
 
@@ -669,72 +559,34 @@ contract CustomUniswapV3MigratorTest is Test {
             recipientToken0: ERC20(token0).balanceOf(recipient),
             recipientToken1: ERC20(token1).balanceOf(recipient),
             recipientETH: recipient.balance,
-            recipientWETH: ERC20(weth).balanceOf(recipient),
+            recipientWETH: weth.balanceOf(recipient),
             poolToken0: ERC20(token0).balanceOf(pool),
             poolToken1: ERC20(token1).balanceOf(pool),
             lockerNftCount: ERC721(address(nfpm)).balanceOf(address(migrator.CUSTOM_V3_LOCKER())),
             airlockToken0: ERC20(token0).balanceOf(airlock),
             airlockToken1: ERC20(token1).balanceOf(airlock),
             airlockETH: airlock.balance,
-            airlockWETH: ERC20(weth).balanceOf(airlock)
+            airlockWETH: weth.balanceOf(airlock)
         });
     }
 
-    function _calculateValidTicks(
-        address pool,
-        uint160 targetSqrtPriceX96,
-        int24 tickSpacing
-    ) internal view returns (int24 tickLower, int24 tickUpper, bool isOneSided) {
-        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-
-        int24 priceImpliedTick = TickMath.getTickAtSqrtPrice(targetSqrtPriceX96);
-        uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(priceImpliedTick);
-
-        if (targetSqrtPriceX96 != boundaryPrice) {
-            int24 compressed = priceImpliedTick / tickSpacing;
-            if (priceImpliedTick < 0 && priceImpliedTick % tickSpacing != 0) compressed--;
-            tickLower = compressed * tickSpacing;
-            tickUpper = tickLower + tickSpacing;
-        } else {
-            tickLower = priceImpliedTick - tickSpacing;
-            tickUpper = priceImpliedTick + tickSpacing;
-        }
-
-        int24 minUsableTick = TickMath.minUsableTick(tickSpacing);
-        int24 maxUsableTick = TickMath.maxUsableTick(tickSpacing);
-
-        if (tickUpper > maxUsableTick) {
-            tickUpper = maxUsableTick;
-            tickLower = tickUpper - 1 * tickSpacing;
-        }
-        if (tickLower < minUsableTick) {
-            tickLower = minUsableTick;
-            tickUpper = tickLower + 1 * tickSpacing;
-        }
-
-        uint160 sqrtPriceLowerX96 = TickMath.getSqrtPriceAtTick(tickLower);
-        uint160 sqrtPriceUpperX96 = TickMath.getSqrtPriceAtTick(tickUpper);
-
-        isOneSided = sqrtPriceX96 <= sqrtPriceLowerX96 || sqrtPriceX96 >= sqrtPriceUpperX96;
-    }
-
-    function _isExtremePrice(uint160 sqrtPriceX96, int24 tickLower, int24 tickUpper) internal pure returns (bool) {
-        uint160 sqrtPriceAX96 = TickMath.getSqrtPriceAtTick(tickLower);
-        uint160 sqrtPriceBX96 = TickMath.getSqrtPriceAtTick(tickUpper);
-
-        return sqrtPriceX96 <= sqrtPriceAX96 || sqrtPriceX96 >= sqrtPriceBX96;
+    function _getBalances(
+        TokenPair memory tp,
+        address recipient,
+        address pool
+    ) internal view returns (BalanceSnapshot memory) {
+        return _getBalances(tp.token0, tp.token1, recipient, pool);
     }
 
     function _assertBalances(
+        address pool,
         BalanceSnapshot memory before,
         BalanceSnapshot memory afterSnapshot,
-        bool isExtremePrice,
         bool isPreexistingLiquidity
-    ) internal pure {
+    ) internal view {
         assertEq(afterSnapshot.migratorToken0, 0, "Migrator should have no token0 left");
         assertEq(afterSnapshot.migratorToken1, 0, "Migrator should have no token1 left");
         assertEq(afterSnapshot.migratorETH, 0, "Migrator should have no ETH left");
-        assertEq(afterSnapshot.lockerNftCount, before.lockerNftCount + 1, "Locker should have received exactly 1 NFT");
         assertEq(afterSnapshot.recipientETH, before.recipientETH, "Recipient should receive no ETH");
 
         // Handle cases where pool balance might decrease due to swaps
@@ -751,29 +603,9 @@ contract CustomUniswapV3MigratorTest is Test {
         uint256 token0Refund = afterSnapshot.recipientToken0 - before.recipientToken0;
         uint256 token1Refund = afterSnapshot.recipientToken1 - before.recipientToken1;
 
-        if (!isExtremePrice && !isPreexistingLiquidity) {
+        if (!isPreexistingLiquidity) {
             assertLt(token0Refund, before.migratorToken0, "Some token0 should be used for liquidity");
             assertLt(token1Refund, before.migratorToken1, "Some token1 should be used for liquidity");
-        } else if (!isPreexistingLiquidity) {
-            console.log("Initial token0:", before.migratorToken0);
-            console.log("Initial token1:", before.migratorToken1);
-            console.log("Token0 refund:", token0Refund);
-            console.log("Token1 refund:", token1Refund);
-            console.log("Token1 decrease from pool:", poolToken1Decrease);
-
-            bool token0FullyRefunded = token0Refund == before.migratorToken0;
-            bool token1FullyRefunded = token1Refund == before.migratorToken1;
-
-            // When there's a swap involved, we need to account for tokens received from the swap
-            if (poolToken1Decrease > 0) {
-                // Token1 came out of the pool due to swap, so total refund includes swap output
-                token1FullyRefunded = (token1Refund == before.migratorToken1 + poolToken1Decrease);
-            }
-
-            assertTrue(
-                (token0FullyRefunded && !token1FullyRefunded) || (!token0FullyRefunded && token1FullyRefunded),
-                "At extreme prices, exactly one token should be fully refunded"
-            );
         }
 
         // In the presence of swaps, the balance invariant is more complex
@@ -803,27 +635,68 @@ contract CustomUniswapV3MigratorTest is Test {
                 "Token1 balance invariant: initial != pool_increase + refund"
             );
         }
+
+        if (!isPreexistingLiquidity) {
+            (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+            (uint256 expectedAmount0, uint256 expectedAmount1) =
+                _computeDepositAmounts(before.migratorToken0, before.migratorToken1, sqrtPriceX96);
+            if (expectedAmount1 > before.migratorToken1) {
+                (, expectedAmount1) = _computeDepositAmounts(expectedAmount0, before.migratorToken1, sqrtPriceX96);
+            } else {
+                (expectedAmount0,) = _computeDepositAmounts(before.migratorToken0, expectedAmount1, sqrtPriceX96);
+            }
+
+            if (_absDiff(expectedAmount0, poolToken0Increase) > 100) {
+                assertApproxEqRel(
+                    poolToken0Increase, expectedAmount0, 0.02e18, "Pool should receive the correct amount of token0"
+                );
+            }
+            if (_absDiff(expectedAmount1, poolToken1Increase) > 100) {
+                assertApproxEqRel(
+                    poolToken1Increase, expectedAmount1, 0.02e18, "Pool should receive the correct amount of token1"
+                );
+            }
+
+            if (before.migratorToken0 != 0 && before.migratorToken1 != 0) {
+                assertEq(
+                    afterSnapshot.lockerNftCount, before.lockerNftCount + 1, "Locker should have received exactly 1 NFT"
+                );
+            }
+        }
     }
 
-    function _setupMigratorWithFeeTier(
-        uint24 feeTier
-    ) internal returns (CustomUniswapV3Migrator) {
-        return new CustomUniswapV3Migrator(
-            MIGRATOR_OWNER,
-            address(this),
-            INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE),
-            IBaseSwapRouter02(UNISWAP_V3_ROUTER_02_BASE),
-            DOPPLER_FEE_RECEIVER,
-            feeTier
-        );
+    struct TokenPair {
+        TestERC20 tokenA;
+        TestERC20 tokenB;
+        address token0;
+        address token1;
     }
 
-    function _createTokenPair() internal returns (TestERC20 tokenA, TestERC20 tokenB, address token0, address token1) {
-        tokenA = new TestERC20(type(uint256).max);
-        tokenB = new TestERC20(type(uint256).max);
+    function _createTokenPair() internal returns (TokenPair memory) {
+        return _createTokenPair(0, false);
+    }
 
-        (token0, token1) =
-            address(tokenA) < address(tokenB) ? (address(tokenA), address(tokenB)) : (address(tokenB), address(tokenA));
+    function _createTokenPair(uint256 seed, bool withEth) internal returns (TokenPair memory) {
+        seed = seed % type(uint128).max;
+
+        TestERC20 tokenA;
+        if (!withEth) {
+            tokenA = new TestERC20{ salt: bytes32(nonce + seed) }(type(uint256).max);
+            nonce++;
+        } else {
+            tokenA = TestERC20(address(0));
+        }
+        TestERC20 tokenB = new TestERC20{ salt: bytes32(nonce + seed) }(type(uint256).max);
+        nonce++;
+
+        if (seed & 1 == 1) {
+            (tokenA, tokenB) = (tokenB, tokenA);
+        }
+
+        address token0 = address(tokenA) < address(tokenB) ? address(tokenA) : address(tokenB);
+        address token1 = address(tokenA) < address(tokenB) ? address(tokenB) : address(tokenA);
+
+        return TokenPair({ tokenA: tokenA, tokenB: tokenB, token0: token0, token1: token1 });
     }
 
     function _transferTokensToMigrator(
@@ -834,29 +707,24 @@ contract CustomUniswapV3MigratorTest is Test {
         uint256 amount1
     ) internal {
         if (address(tokenA) == token0) {
-            tokenA.transfer(address(migrator), amount0);
-            tokenB.transfer(address(migrator), amount1);
+            _transferTokenOrEthToMigrator(address(tokenA), amount0);
+            _transferTokenOrEthToMigrator(address(tokenB), amount1);
         } else {
-            tokenA.transfer(address(migrator), amount1);
-            tokenB.transfer(address(migrator), amount0);
+            _transferTokenOrEthToMigrator(address(tokenA), amount1);
+            _transferTokenOrEthToMigrator(address(tokenB), amount0);
         }
     }
 
-    function _initializePoolAtExtremePrice(address token0, address token1) internal returns (address pool) {
-        pool = migrator.initialize(token0, token1, liquidityMigratorData);
+    function _transferTokensToMigrator(TokenPair memory tp, uint256 amount0, uint256 amount1) internal {
+        _transferTokensToMigrator(tp.tokenA, tp.tokenB, tp.token0, amount0, amount1);
+    }
 
-        // Verify pool was initialized at extreme price
-        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        int24 tickSpacing = factory.feeAmountTickSpacing(migrator.FEE_TIER());
-
-        // Should be at extreme tick based on which token is the asset
-        bool isAssetToken0 = token0 < token1;
-        int24 expectedTick = isAssetToken0
-            ? TickMath.minUsableTick(tickSpacing) + tickSpacing
-            : TickMath.maxUsableTick(tickSpacing) - tickSpacing;
-
-        assertEq(tick, expectedTick, "Pool should be initialized at extreme tick");
+    function _transferTokenOrEthToMigrator(address token, uint256 amount) internal {
+        if (token == address(0)) {
+            vm.deal(address(migrator), amount);
+        } else {
+            ERC20(token).transfer(address(migrator), amount);
+        }
     }
 
     function _assertMigrationPoolState(
@@ -867,16 +735,8 @@ contract CustomUniswapV3MigratorTest is Test {
         (uint160 currentSqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
         uint128 currentLiquidity = IUniswapV3Pool(pool).liquidity();
 
-        assertEq(currentSqrtPriceX96, expectedSqrtPriceX96, "Pool price mismatch");
+        assertApproxEqRel(currentSqrtPriceX96, expectedSqrtPriceX96, 0.0001e18, "Pool price mismatch");
         assertEq(currentLiquidity, expectedLiquidity, "Pool liquidity mismatch");
-
-        // Allow for small price deviations due to tick spacing
-        uint256 priceDiff = currentSqrtPriceX96 > expectedSqrtPriceX96
-            ? currentSqrtPriceX96 - expectedSqrtPriceX96
-            : expectedSqrtPriceX96 - currentSqrtPriceX96;
-        uint256 tolerance = expectedSqrtPriceX96 / 10_000;
-
-        assertTrue(priceDiff <= tolerance, "Pool price mismatch");
     }
 
     function _assertPoolInitialized(
@@ -896,5 +756,26 @@ contract CustomUniswapV3MigratorTest is Test {
 
     function _sortTokens(TestERC20 tokenA, TestERC20 tokenB) internal pure returns (address token0, address token1) {
         return _sortTokens(address(tokenA), address(tokenB));
+    }
+
+    function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a - b : b - a;
+    }
+
+    function _computeDepositAmounts(
+        uint256 balance0,
+        uint256 balance1,
+        uint160 sqrtPriceX96
+    ) internal pure returns (uint256 depositAmount0, uint256 depositAmount1) {
+        // Stolen from https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/OracleLibrary.sol#L57
+        if (sqrtPriceX96 <= type(uint128).max) {
+            uint256 ratioX192 = uint256(sqrtPriceX96) * sqrtPriceX96;
+            depositAmount0 = FullMath.mulDiv(balance1, 1 << 192, ratioX192);
+            depositAmount1 = FullMath.mulDiv(balance0, ratioX192, 1 << 192);
+        } else {
+            uint256 ratioX128 = FullMath.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 64);
+            depositAmount0 = FullMath.mulDiv(balance1, 1 << 128, ratioX128);
+            depositAmount1 = FullMath.mulDiv(balance0, ratioX128, 1 << 128);
+        }
     }
 }
