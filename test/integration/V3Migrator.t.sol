@@ -407,7 +407,7 @@ contract V3MigratorTest is BaseTestExtension {
             maximumAddress = address(type(uint160).max);
         }
 
-        bytes memory liquidityMigratorData = abi.encode(options.integratorFeeReceiver);
+        bytes memory liquidityMigratorData = abi.encode(options.integratorFeeReceiver, address(0), 0, type(uint64).max);
 
         int24 startTick_ =
             _computeValidTick(options.dopplerTickSpacing, isInitializerToken0 ? DEFAULT_END_TICK : DEFAULT_START_TICK);

@@ -88,12 +88,7 @@ contract CustomUniswapV3MigratorTest is Test {
     address constant DOPPLER_FEE_RECEIVER = address(0x2222);
     address constant INTEGRATOR_FEE_RECEIVER = address(0x1111);
 
-    bytes public liquidityMigratorData = abi.encode(
-        INTEGRATOR_FEE_RECEIVER,
-        address(0),
-        0,
-        type(uint64).max
-    );
+    bytes public liquidityMigratorData = abi.encode(INTEGRATOR_FEE_RECEIVER, address(0), 0, type(uint64).max);
 
     // Common price ratios for testing
     uint160 constant SQRT_PRICE_1_1 = 79_228_162_514_264_337_593_543_950_336; // sqrt(1) * 2^96
@@ -189,8 +184,14 @@ contract CustomUniswapV3MigratorTest is Test {
     }
 
     function test_initialize_RevertsWithZeroFeeReceiver() public setupMigrator {
-        bytes memory invalidData = abi.encode(address(0));
+        bytes memory invalidData = abi.encode(address(0), address(0), 0, type(uint64).max);
         vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.ZeroFeeReceiverAddress.selector));
+        migrator.initialize(address(0x1111), address(0x2222), invalidData);
+    }
+
+    function test_initialize_RevertsWithInvalidMinUnlockDate() public setupMigrator {
+        bytes memory invalidData = abi.encode(INTEGRATOR_FEE_RECEIVER, address(0), 0, vm.getBlockTimestamp() - 1);
+        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.InvalidMinUnlockDate.selector));
         migrator.initialize(address(0x1111), address(0x2222), invalidData);
     }
 
@@ -354,7 +355,7 @@ contract CustomUniswapV3MigratorTest is Test {
         vm.assume(uint160(numeraire) > 255 || numeraire == address(0));
         vm.assume(uint160(integratorFeeReceiver) > 255);
 
-        bytes memory fuzzData = abi.encode(integratorFeeReceiver);
+        bytes memory fuzzData = abi.encode(integratorFeeReceiver, address(0), 0, type(uint64).max);
 
         address pool = migrator.initialize(asset, numeraire, fuzzData);
         _assertPoolInitialized(pool);
