@@ -324,9 +324,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     function _invertSqrtPriceX96(
         uint160 sqrtPriceX96
     ) internal pure returns (uint160) {
-        uint256 invertedSqrtPriceX96 = (1 << 192) / sqrtPriceX96;
-        require(invertedSqrtPriceX96 <= type(uint160).max, InvalidSqrtPriceX96());
-        return uint160(invertedSqrtPriceX96);
+        return TickMath.getSqrtPriceAtTick(-1 * TickMath.getTickAtSqrtPrice(sqrtPriceX96));
     }
 
     /**
