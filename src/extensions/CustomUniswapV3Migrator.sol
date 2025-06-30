@@ -32,7 +32,6 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     uint24 public immutable FEE_TIER;
 
     ILiquidityMigrator public fallbackLiquidityMigrator;
-    mapping(address pool => address integratorFeeReceiver) public poolFeeReceivers;
 
     receive() external payable onlyAirlock { }
 
@@ -83,13 +82,8 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     ) external onlyAirlock returns (address pool) {
         require(liquidityMigratorData.length == 128, InvalidLiquidityMigratorDataLength());
 
-        (
-            address integratorFeeReceiver,
-            address creatorFeeReceiver,
-            uint256 creatorFee,
-            uint64 minUnlockDate,
-            address dopplerFeeReceiver
-        ) = abi.decode(liquidityMigratorData, (address, address, uint256, uint64, address));
+        (address integratorFeeReceiver, address creatorFeeReceiver, uint256 creatorFee, uint64 minUnlockDate) =
+            abi.decode(liquidityMigratorData, (address, address, uint256, uint64));
 
         require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
         require(minUnlockDate >= block.timestamp, InvalidMinUnlockDate());
@@ -103,7 +97,6 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         }
         _tryInitializePool(pool, asset == token0);
 
-        poolFeeReceivers[pool] = integratorFeeReceiver;
         CUSTOM_V3_LOCKER.initializePosition(pool, minUnlockDate, creatorFeeReceiver, creatorFee, integratorFeeReceiver);
 
         return pool;
@@ -160,7 +153,7 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
 
         _rebalance(pool, token0, token1, sqrtPriceX96);
 
-        uint128 liquidity = _mintPosition(pool, token0, token1, poolFeeReceivers[pool], recipient);
+        uint128 liquidity = _mintPosition(pool, token0, token1, recipient);
         _refundDustAndRevokeAllowances(token0, token1, recipient);
 
         return liquidity;
@@ -185,7 +178,6 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
      * @param pool Address of the pool
      * @param token0 Address of token0
      * @param token1 Address of token1
-     * @param integratorFeeReceiver Address of the integrator fee receiver
      * @param recipient Address receiving the liquidity pool tokens i.e. timelock
      * @return liquidity The amount of liquidity minted
      */
@@ -193,7 +185,6 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         address pool,
         address token0,
         address token1,
-        address integratorFeeReceiver,
         address recipient
     ) internal returns (uint128 liquidity) {
         (uint256 balance0, uint256 balance1) = _getTokenBalances(token0, token1);
