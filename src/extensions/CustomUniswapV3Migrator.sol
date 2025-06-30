@@ -83,8 +83,14 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
     ) external onlyAirlock returns (address pool) {
         require(liquidityMigratorData.length == 128, InvalidLiquidityMigratorDataLength());
 
-        (address integratorFeeReceiver, address creatorFeeReceiver, uint256 creatorFee, uint64 minUnlockDate) =
-            abi.decode(liquidityMigratorData, (address, address, uint256, uint64));
+        (
+            address integratorFeeReceiver,
+            address creatorFeeReceiver,
+            uint256 creatorFee,
+            uint64 minUnlockDate,
+            address dopplerFeeReceiver
+        ) = abi.decode(liquidityMigratorData, (address, address, uint256, uint64, address));
+
         require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
         require(minUnlockDate >= block.timestamp, InvalidMinUnlockDate());
 
@@ -95,17 +101,10 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         if (pool == address(0)) {
             pool = FACTORY.createPool(token0, token1, FEE_TIER);
         }
+        _tryInitializePool(pool, asset == token0);
 
         poolFeeReceivers[pool] = integratorFeeReceiver;
-
-        int24 tickSpacing = FACTORY.feeAmountTickSpacing(FEE_TIER);
-        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(
-            asset == token0 ? TickMath.minUsableTick(tickSpacing) : TickMath.maxUsableTick(tickSpacing)
-        );
-
-        try IUniswapV3Pool(pool).initialize(sqrtPriceX96) { } catch { }
-
-        CUSTOM_V3_LOCKER.registerPosition(pool, minUnlockDate, creatorFeeReceiver, creatorFee, integratorFeeReceiver);
+        CUSTOM_V3_LOCKER.initializePosition(pool, minUnlockDate, creatorFeeReceiver, creatorFee, integratorFeeReceiver);
 
         return pool;
     }
@@ -313,6 +312,20 @@ contract CustomUniswapV3Migrator is ICustomUniswapV3Migrator, Ownable, Immutable
         }
 
         return fallbackLiquidityMigrator_.migrate(sqrtPriceX96, token0, token1, recipient);
+    }
+
+    /**
+     * @notice Tries to initialize a pool, ignores any reverts
+     * @param pool Address of the pool
+     * @param isToken0 Whether the asset is token0
+     */
+    function _tryInitializePool(address pool, bool isToken0) internal {
+        int24 tickSpacing = FACTORY.feeAmountTickSpacing(FEE_TIER);
+        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(
+            isToken0 ? TickMath.minUsableTick(tickSpacing) : TickMath.maxUsableTick(tickSpacing)
+        );
+
+        try IUniswapV3Pool(pool).initialize(sqrtPriceX96) { } catch { }
     }
 
     /**
