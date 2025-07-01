@@ -320,20 +320,42 @@ contract CustomUniswapV3MigratorTest is Test {
         uint256 seed,
         bool withEth
     ) public setupMigrator {
-        amount0 = bound(amount0, 1e10, 1e18);
-        amount1 = bound(amount1, 1e10, 1e18);
+        amount0 = bound(amount0, 1e18, 1e24);
+        amount1 = bound(amount1, 1e18, 1e28);
 
         targetSqrtPriceX96 =
-            uint160(bound(uint256(targetSqrtPriceX96), TickMath.MIN_SQRT_PRICE * 1e18, TickMath.MAX_SQRT_PRICE / 1e18));
+            uint160(bound(uint256(targetSqrtPriceX96), TickMath.MIN_SQRT_PRICE * 1e16, TickMath.MAX_SQRT_PRICE / 1e16));
 
         TokenPair memory tp = _createTokenPair(seed, withEth);
+
+        (address migratorToken0, address migratorToken1) = _sortTokens(withEth ? address(weth) : tp.token0, tp.token1);
+        address assetToken = withEth ? tp.token1 : (seed % 2 == 0 ? tp.token0 : tp.token1);
+        address numeraireToken = withEth ? tp.token0 : (seed % 2 == 0 ? tp.token1 : tp.token0);
+        bool isAssetLowerThanWeth = assetToken < address(weth);
+
         _transferTokensToMigrator(tp, amount0, amount1);
 
-        migrator.initialize(tp.token1, tp.token0, liquidityMigratorData);
+        address pool = migrator.initialize(assetToken, numeraireToken, liquidityMigratorData);
+
+        assertEq(IUniswapV3Pool(pool).token0(), migratorToken0, "Bad token0");
+        assertEq(IUniswapV3Pool(pool).token1(), migratorToken1, "Bad token1");
+
+        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+        int24 expectedTick = assetToken == migratorToken0 ? minUsableTick + tickSpacing : maxUsableTick - tickSpacing;
+        assertEq(tick, expectedTick, "Pool should be initialized at extreme tick");
 
         address recipient = address(0xbeef);
 
         _migrate(tp, targetSqrtPriceX96, recipient, false);
+
+        uint160 normalizedTargetSqrtPriceX96 = targetSqrtPriceX96;
+        if (withEth && isAssetLowerThanWeth) {
+            normalizedTargetSqrtPriceX96 = uint160((1 << 192) / targetSqrtPriceX96);
+        }
+
+        (uint160 poolPrice,,,,,,) = IUniswapV3Pool(pool).slot0();
+        assertApproxEqRel(poolPrice, normalizedTargetSqrtPriceX96, 0.0001e18);
     }
 
     function testFuzz_initialize_WithVariousAddresses(
@@ -640,11 +662,6 @@ contract CustomUniswapV3MigratorTest is Test {
             (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
             (uint256 expectedAmount0, uint256 expectedAmount1) =
                 _computeDepositAmounts(before.migratorToken0, before.migratorToken1, sqrtPriceX96);
-            if (expectedAmount1 > before.migratorToken1) {
-                (, expectedAmount1) = _computeDepositAmounts(expectedAmount0, before.migratorToken1, sqrtPriceX96);
-            } else {
-                (expectedAmount0,) = _computeDepositAmounts(before.migratorToken0, expectedAmount1, sqrtPriceX96);
-            }
 
             if (_absDiff(expectedAmount0, poolToken0Increase) > 100) {
                 assertApproxEqRel(
@@ -767,15 +784,25 @@ contract CustomUniswapV3MigratorTest is Test {
         uint256 balance1,
         uint160 sqrtPriceX96
     ) internal pure returns (uint256 depositAmount0, uint256 depositAmount1) {
-        // Stolen from https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/OracleLibrary.sol#L57
+        uint256 ratioX192;
+        uint256 ratioScale;
+
         if (sqrtPriceX96 <= type(uint128).max) {
-            uint256 ratioX192 = uint256(sqrtPriceX96) * sqrtPriceX96;
-            depositAmount0 = FullMath.mulDiv(balance1, 1 << 192, ratioX192);
-            depositAmount1 = FullMath.mulDiv(balance0, ratioX192, 1 << 192);
+            ratioX192 = uint256(sqrtPriceX96) * sqrtPriceX96;
+            ratioScale = 192;
         } else {
-            uint256 ratioX128 = FullMath.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 64);
-            depositAmount0 = FullMath.mulDiv(balance1, 1 << 128, ratioX128);
-            depositAmount1 = FullMath.mulDiv(balance0, ratioX128, 1 << 128);
+            ratioX192 = FullMath.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 64);
+            ratioScale = 128;
+        }
+
+        uint256 required1ForAllToken0 = FullMath.mulDiv(balance0, ratioX192, 1 << ratioScale);
+
+        if (required1ForAllToken0 <= balance1) {
+            depositAmount0 = balance0;
+            depositAmount1 = required1ForAllToken0;
+        } else {
+            depositAmount1 = balance1;
+            depositAmount0 = FullMath.mulDiv(balance1, 1 << ratioScale, ratioX192);
         }
     }
 }
