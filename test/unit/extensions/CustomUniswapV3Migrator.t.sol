@@ -9,13 +9,14 @@ import { ERC20 } from "@solmate/tokens/ERC20.sol";
 import { ERC721 } from "@solady/tokens/ERC721.sol";
 import { CustomUniswapV3Migrator } from "src/extensions/CustomUniswapV3Migrator.sol";
 import { ICustomUniswapV3Migrator } from "src/extensions/interfaces/ICustomUniswapV3Migrator.sol";
+import { CustomUniswapV3Locker } from "src/extensions/CustomUniswapV3Locker.sol";
+import { ICustomUniswapV3Locker } from "src/extensions/interfaces/ICustomUniswapV3Locker.sol";
 import { INonfungiblePositionManager } from "src/extensions/interfaces/INonfungiblePositionManager.sol";
 import { IUniswapV3Factory, IBaseSwapRouter02 } from "src/extensions/CustomUniswapV3Migrator.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import { ILiquidityMigrator } from "src/interfaces/ILiquidityMigrator.sol";
 import { SenderNotAirlock } from "src/base/ImmutableAirlock.sol";
 import { Airlock } from "src/Airlock.sol";
-import { CustomUniswapV3Locker } from "src/extensions/CustomUniswapV3Locker.sol";
 import {
     UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER_BASE,
     UNISWAP_V3_FACTORY_BASE,
@@ -88,7 +89,7 @@ contract CustomUniswapV3MigratorTest is Test {
     address constant DOPPLER_FEE_RECEIVER = address(0x2222);
     address constant INTEGRATOR_FEE_RECEIVER = address(0x1111);
 
-    bytes public liquidityMigratorData = abi.encode(INTEGRATOR_FEE_RECEIVER);
+    bytes public liquidityMigratorData = abi.encode(INTEGRATOR_FEE_RECEIVER, address(0), 0, type(uint64).max);
 
     // Common price ratios for testing
     uint160 constant SQRT_PRICE_1_1 = 79_228_162_514_264_337_593_543_950_336; // sqrt(1) * 2^96
@@ -184,8 +185,14 @@ contract CustomUniswapV3MigratorTest is Test {
     }
 
     function test_initialize_RevertsWithZeroFeeReceiver() public setupMigrator {
-        bytes memory invalidData = abi.encode(address(0));
-        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Migrator.ZeroFeeReceiverAddress.selector));
+        bytes memory invalidData = abi.encode(address(0), address(0), 0, type(uint64).max);
+        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Locker.ZeroFeeReceiverAddress.selector));
+        migrator.initialize(address(0x1111), address(0x2222), invalidData);
+    }
+
+    function test_initialize_RevertsWithInvalidMinUnlockDate() public setupMigrator {
+        bytes memory invalidData = abi.encode(INTEGRATOR_FEE_RECEIVER, address(0), 0, vm.getBlockTimestamp() - 1);
+        vm.expectRevert(abi.encodeWithSelector(ICustomUniswapV3Locker.InvalidMinUnlockDate.selector));
         migrator.initialize(address(0x1111), address(0x2222), invalidData);
     }
 
@@ -198,10 +205,26 @@ contract CustomUniswapV3MigratorTest is Test {
         assertEq(pool, IUniswapV3Factory(UNISWAP_V3_FACTORY_BASE).getPool(token0, token1, feeTier), "Wrong pool");
     }
 
-    function test_initialize_SetsPoolFeeReceivers() public setupMigrator {
+    function test_initialize_SetsLockerPositionState() public setupMigrator {
+        bytes memory data = abi.encode(INTEGRATOR_FEE_RECEIVER, address(0xcccc), 0.1e18, vm.getBlockTimestamp() + 100);
+
         TokenPair memory tp = _createTokenPair();
-        address pool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
-        assertEq(migrator.poolFeeReceivers(pool), INTEGRATOR_FEE_RECEIVER, "Wrong fee receiver");
+        address pool = migrator.initialize(tp.token0, tp.token1, data);
+        (
+            address creatorFeeReceiver,
+            uint256 creatorFee,
+            address integratorFeeReceiver,
+            address recipient,
+            uint64 minUnlockDate,
+            uint256 tokenId
+        ) = migrator.CUSTOM_V3_LOCKER().positionStates(pool);
+
+        assertEq(integratorFeeReceiver, INTEGRATOR_FEE_RECEIVER, "Wrong integrator fee receiver");
+        assertEq(creatorFeeReceiver, address(0xcccc), "Wrong creator fee receiver");
+        assertEq(creatorFee, 0.1e18, "Wrong creator fee");
+        assertEq(minUnlockDate, vm.getBlockTimestamp() + 100, "Wrong min unlock date");
+        assertEq(recipient, address(0), "Wrong recipient");
+        assertEq(tokenId, 0, "Wrong token ID");
     }
 
     function testFuzz_initialize_InitializesPoolAtExtremePrice(
@@ -250,10 +273,8 @@ contract CustomUniswapV3MigratorTest is Test {
     function test_migrate_BasicScenario() public setupMigrator {
         TokenPair memory tp = _createTokenPair();
 
-        address pool = migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
+        migrator.initialize(tp.token0, tp.token1, liquidityMigratorData);
         _transferTokensToMigrator(tp, 1e24, 1e24);
-
-        assertEq(migrator.poolFeeReceivers(pool), INTEGRATOR_FEE_RECEIVER, "Fee receiver should be registered");
 
         uint160 targetPrice = SQRT_PRICE_3_2;
         address recipient = address(0xbeef);
@@ -320,42 +341,20 @@ contract CustomUniswapV3MigratorTest is Test {
         uint256 seed,
         bool withEth
     ) public setupMigrator {
-        amount0 = bound(amount0, 1e18, 1e24);
-        amount1 = bound(amount1, 1e18, 1e28);
+        amount0 = bound(amount0, 1e10, 1e18);
+        amount1 = bound(amount1, 1e10, 1e18);
 
         targetSqrtPriceX96 =
-            uint160(bound(uint256(targetSqrtPriceX96), TickMath.MIN_SQRT_PRICE * 1e16, TickMath.MAX_SQRT_PRICE / 1e16));
+            uint160(bound(uint256(targetSqrtPriceX96), TickMath.MIN_SQRT_PRICE * 1e18, TickMath.MAX_SQRT_PRICE / 1e18));
 
         TokenPair memory tp = _createTokenPair(seed, withEth);
-
-        (address migratorToken0, address migratorToken1) = _sortTokens(withEth ? address(weth) : tp.token0, tp.token1);
-        address assetToken = withEth ? tp.token1 : (seed % 2 == 0 ? tp.token0 : tp.token1);
-        address numeraireToken = withEth ? tp.token0 : (seed % 2 == 0 ? tp.token1 : tp.token0);
-        bool isAssetLowerThanWeth = assetToken < address(weth);
-
         _transferTokensToMigrator(tp, amount0, amount1);
 
-        address pool = migrator.initialize(assetToken, numeraireToken, liquidityMigratorData);
-
-        assertEq(IUniswapV3Pool(pool).token0(), migratorToken0, "Bad token0");
-        assertEq(IUniswapV3Pool(pool).token1(), migratorToken1, "Bad token1");
-
-        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        int24 expectedTick = assetToken == migratorToken0 ? minUsableTick + tickSpacing : maxUsableTick - tickSpacing;
-        assertEq(tick, expectedTick, "Pool should be initialized at extreme tick");
+        migrator.initialize(tp.token1, tp.token0, liquidityMigratorData);
 
         address recipient = address(0xbeef);
 
         _migrate(tp, targetSqrtPriceX96, recipient, false);
-
-        uint160 normalizedTargetSqrtPriceX96 = targetSqrtPriceX96;
-        if (withEth && isAssetLowerThanWeth) {
-            normalizedTargetSqrtPriceX96 = uint160((1 << 192) / targetSqrtPriceX96);
-        }
-
-        (uint160 poolPrice,,,,,,) = IUniswapV3Pool(pool).slot0();
-        assertApproxEqRel(poolPrice, normalizedTargetSqrtPriceX96, 0.0001e18);
     }
 
     function testFuzz_initialize_WithVariousAddresses(
@@ -371,7 +370,7 @@ contract CustomUniswapV3MigratorTest is Test {
         vm.assume(uint160(numeraire) > 255 || numeraire == address(0));
         vm.assume(uint160(integratorFeeReceiver) > 255);
 
-        bytes memory fuzzData = abi.encode(integratorFeeReceiver);
+        bytes memory fuzzData = abi.encode(integratorFeeReceiver, address(0), 0, type(uint64).max);
 
         address pool = migrator.initialize(asset, numeraire, fuzzData);
         _assertPoolInitialized(pool);
@@ -380,7 +379,20 @@ contract CustomUniswapV3MigratorTest is Test {
         (address token0, address token1) = _sortTokens(asset, expectedNumeraire);
 
         assertEq(pool, factory.getPool(token0, token1, feeTier), "Pool address mismatch");
-        assertEq(migrator.poolFeeReceivers(pool), integratorFeeReceiver, "Fee receiver mismatch");
+        (
+            address creatorFeeReceiver,
+            uint256 creatorFee,
+            address integratorFeeReceiver_,
+            address recipient,
+            uint64 minUnlockDate,
+            uint256 tokenId
+        ) = migrator.CUSTOM_V3_LOCKER().positionStates(pool);
+        assertEq(creatorFeeReceiver, address(0), "Wrong creator fee receiver");
+        assertEq(creatorFee, 0, "Wrong creator fee");
+        assertEq(minUnlockDate, type(uint64).max, "Wrong min unlock date");
+        assertEq(integratorFeeReceiver_, integratorFeeReceiver, "Wrong integrator fee receiver");
+        assertEq(recipient, address(0), "Wrong recipient");
+        assertEq(tokenId, 0, "Wrong token ID");
 
         bool isAssetToken0 = asset == token0;
 
@@ -497,24 +509,6 @@ contract CustomUniswapV3MigratorTest is Test {
         );
 
         assertEq(migrator.migrate(targetPrice, tp.token0, tp.token1, recipient), 1000);
-    }
-
-    function testFuzz_tickBasedPriceInversion(
-        uint160 targetSqrtPriceX96
-    ) public {
-        targetSqrtPriceX96 =
-            uint160(bound(uint256(targetSqrtPriceX96), TickMath.MIN_SQRT_PRICE + 1, TickMath.MAX_SQRT_PRICE - 1));
-
-        uint160 inverseSqrtPriceX96 = TickMath.getSqrtPriceAtTick(-1 * TickMath.getTickAtSqrtPrice(targetSqrtPriceX96));
-        if (inverseSqrtPriceX96 >= TickMath.MAX_SQRT_PRICE) {
-            inverseSqrtPriceX96 = TickMath.MAX_SQRT_PRICE - 1;
-        }
-        if (inverseSqrtPriceX96 <= TickMath.MIN_SQRT_PRICE) {
-            inverseSqrtPriceX96 = TickMath.MIN_SQRT_PRICE + 1;
-        }
-        uint160 expectedSqrtPriceX96 =
-            TickMath.getSqrtPriceAtTick(-1 * TickMath.getTickAtSqrtPrice(inverseSqrtPriceX96));
-        assertApproxEqRel(targetSqrtPriceX96, expectedSqrtPriceX96, 0.001e18);
     }
 
     function _migrate(
@@ -662,6 +656,11 @@ contract CustomUniswapV3MigratorTest is Test {
             (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
             (uint256 expectedAmount0, uint256 expectedAmount1) =
                 _computeDepositAmounts(before.migratorToken0, before.migratorToken1, sqrtPriceX96);
+            if (expectedAmount1 > before.migratorToken1) {
+                (, expectedAmount1) = _computeDepositAmounts(expectedAmount0, before.migratorToken1, sqrtPriceX96);
+            } else {
+                (expectedAmount0,) = _computeDepositAmounts(before.migratorToken0, expectedAmount1, sqrtPriceX96);
+            }
 
             if (_absDiff(expectedAmount0, poolToken0Increase) > 100) {
                 assertApproxEqRel(

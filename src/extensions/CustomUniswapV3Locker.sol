@@ -19,9 +19,8 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
     using FixedPointMathLib for uint256;
     using FixedPointMathLib for uint160;
 
-    uint256 constant ONE_YEAR = 365 days;
-    uint256 constant DOPPLER_FEE_WAD = 0.05 ether;
-    uint256 constant WAD = 1 ether;
+    uint256 public constant DOPPLER_FEE_WAD = 0.05e18;
+    uint256 public constant MAX_CREATOR_FEE_WAD = 1e18 - DOPPLER_FEE_WAD;
 
     /// @notice Address of the Uniswap V3 nonfungible position manager
     INonfungiblePositionManager public immutable NONFUNGIBLE_POSITION_MANAGER;
@@ -33,7 +32,7 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
     address public dopplerFeeReceiver;
 
     /// @notice Returns the state of a pool
-    mapping(uint256 tokenId => PositionState state) public positionStates;
+    mapping(address pool => PositionState state) public positionStates;
 
     /**
      * @param owner_ Address of the owner
@@ -54,55 +53,97 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
     }
 
     /**
-     * @notice Registers the LP tokens held by this contract with a fixed lock up period
-     * @param tokenId Token ID of the NFT position
-     * @param integratorFeeReceiver Address of the integrator fee receiver
-     * @param timelock Address of the timelock
+     * @notice Modifier to check if the sender is the migrator
      */
-    function register(uint256 tokenId, address integratorFeeReceiver, address timelock) external {
+    modifier onlyMigrator() {
         require(msg.sender == address(MIGRATOR), SenderNotMigrator());
-        require(positionStates[tokenId].minUnlockDate == 0, PoolAlreadyInitialized());
-        require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
-
-        address owner = NONFUNGIBLE_POSITION_MANAGER.ownerOf(tokenId);
-        require(owner == address(this), NFTPositionNotFound(tokenId));
-
-        positionStates[tokenId] = PositionState({
-            minUnlockDate: uint64(block.timestamp + ONE_YEAR),
-            integratorFeeReceiver: integratorFeeReceiver,
-            recipient: timelock
-        });
+        _;
     }
 
-    function harvest(
-        uint256 tokenId
+    /**
+     * @notice Registers an LP position to be held by this contract
+     * @param pool Address of the pool
+     * @param minUnlockDate Minimum unlock date
+     * @param creatorFeeReceiver Address of the creator fee receiver
+     * @param creatorFee Creator fee
+     * @param integratorFeeReceiver Address of the integrator fee receiver
+     */
+    function initializePosition(
+        address pool,
+        uint64 minUnlockDate,
+        address creatorFeeReceiver,
+        uint256 creatorFee,
+        address integratorFeeReceiver
+    ) external onlyMigrator {
+        require(positionStates[pool].minUnlockDate == 0, PoolAlreadyInitialized());
+        require(integratorFeeReceiver != address(0), ZeroFeeReceiverAddress());
+        require((creatorFeeReceiver == address(0)) == (creatorFee == 0), InvalidCreatorFeeSetup());
+        require(creatorFee <= MAX_CREATOR_FEE_WAD, InvalidCreatorFeeSetup());
+        require(minUnlockDate >= block.timestamp, InvalidMinUnlockDate());
+
+        positionStates[pool].minUnlockDate = minUnlockDate;
+        positionStates[pool].creatorFeeReceiver = creatorFeeReceiver;
+        positionStates[pool].creatorFee = creatorFee;
+        positionStates[pool].integratorFeeReceiver = integratorFeeReceiver;
+    }
+
+    /**
+     * @notice Updates the position on a pool with its token ID and recipient after migration
+     * @param pool Address of the pool
+     * @param tokenId Token ID of the NFT position
+     * @param recipient Address of the recipient
+     */
+    function updatePosition(address pool, uint256 tokenId, address recipient) external onlyMigrator {
+        require(positionStates[pool].tokenId == 0, PoolAlreadyInitialized());
+        require(tokenId != 0, InvalidTokenId());
+
+        address tokenOwner = NONFUNGIBLE_POSITION_MANAGER.ownerOf(tokenId);
+        require(tokenOwner == address(this), InvalidTokenOwnership());
+
+        positionStates[pool].tokenId = tokenId;
+        positionStates[pool].recipient = recipient;
+    }
+
+    /**
+     * @notice Harvests the fees from the position and distributes them to the fee receivers
+     * @param pool Address of the pool
+     * @return collectedAmount0 Amount of token0 collected
+     * @return collectedAmount1 Amount of token1 collected
+     */
+    function harvestPosition(
+        address pool
     ) public returns (uint256 collectedAmount0, uint256 collectedAmount1) {
-        // set amount0Max and amount1Max to uint256.max to collect all fees
         (collectedAmount0, collectedAmount1) = NONFUNGIBLE_POSITION_MANAGER.collect(
             INonfungiblePositionManager.CollectParams({
-                tokenId: tokenId,
+                tokenId: positionStates[pool].tokenId,
                 recipient: address(this),
                 amount0Max: type(uint128).max,
                 amount1Max: type(uint128).max
             })
         );
-        _distributeFees(collectedAmount0, collectedAmount1, tokenId);
+
+        _distributeFees(pool, collectedAmount0, collectedAmount1);
     }
 
     /**
-     * @notice Transfers the whole LP to the recipient i.e. Timelock contract after the lockup period, fees are distributed once more before unlocking
-     * @param tokenId Token ID of the NFT position
+     * @notice Transfers the whole LP to the recipient (i.e. Timelock contract) after the lockup
+     * period. Fees are distributed once more before unlocking
+     * @param pool Address of the pool
+     * @return collectedAmount0 Amount of token0 collected
+     * @return collectedAmount1 Amount of token1 collected
      */
-    function unlock(
-        uint256 tokenId
-    ) external {
-        uint64 minUnlockDate = positionStates[tokenId].minUnlockDate;
-        address recipient = positionStates[tokenId].recipient;
+    function unlockPosition(
+        address pool
+    ) external returns (uint256 collectedAmount0, uint256 collectedAmount1) {
+        uint256 tokenId = positionStates[pool].tokenId;
+        uint64 minUnlockDate = positionStates[pool].minUnlockDate;
+        address recipient = positionStates[pool].recipient;
 
-        require(minUnlockDate > 0, PoolNotInitialized());
+        require(minUnlockDate != 0, PoolNotInitialized());
         require(block.timestamp >= minUnlockDate, MinUnlockDateNotReached());
 
-        harvest(tokenId);
+        (collectedAmount0, collectedAmount1) = harvestPosition(pool);
+
         // TimelockController is safe to receive ERC721 tokens
         NONFUNGIBLE_POSITION_MANAGER.safeTransferFrom(address(this), recipient, tokenId);
     }
@@ -128,24 +169,60 @@ contract CustomUniswapV3Locker is ICustomUniswapV3Locker, Ownable, IERC721Receiv
         emit DopplerFeeReceiverSet(dopplerFeeReceiver);
     }
 
-    function _distributeFees(uint256 collectedAmount0, uint256 collectedAmount1, uint256 tokenId) internal {
-        if (collectedAmount0 > 0 || collectedAmount1 > 0) {
-            (,, address token0, address token1,,,,,,,,) = NONFUNGIBLE_POSITION_MANAGER.positions(tokenId);
+    /**
+     * @notice Distributes the fees to the fee receivers
+     * @param pool Address of the pool
+     * @param collectedAmount0 Amount of token0 collected
+     * @param collectedAmount1 Amount of token1 collected
+     */
+    function _distributeFees(address pool, uint256 collectedAmount0, uint256 collectedAmount1) internal {
+        if (collectedAmount0 == 0 && collectedAmount1 == 0) return;
 
-            // distribute fees - 95% to integratorFeeReceiver, 5% to dopplerFeeReceiver
-            address integratorFeeReceiver = positionStates[tokenId].integratorFeeReceiver;
-            address dopplerFeeReceiver_ = dopplerFeeReceiver;
+        (,, address token0, address token1,,,,,,,,) =
+            NONFUNGIBLE_POSITION_MANAGER.positions(positionStates[pool].tokenId);
 
-            if (collectedAmount0 > 0) {
-                uint256 dopplerFee0 = collectedAmount0 * DOPPLER_FEE_WAD / WAD;
-                ERC20(token0).safeTransfer(integratorFeeReceiver, collectedAmount0 - dopplerFee0);
-                ERC20(token0).safeTransfer(dopplerFeeReceiver_, dopplerFee0);
-            }
-            if (collectedAmount1 > 0) {
-                uint256 dopplerFee1 = collectedAmount1 * DOPPLER_FEE_WAD / WAD;
-                ERC20(token1).safeTransfer(integratorFeeReceiver, collectedAmount1 - dopplerFee1);
-                ERC20(token1).safeTransfer(dopplerFeeReceiver_, dopplerFee1);
-            }
+        address integratorFeeReceiver = positionStates[pool].integratorFeeReceiver;
+        address creatorFeeReceiver = positionStates[pool].creatorFeeReceiver;
+        uint256 creatorFee = positionStates[pool].creatorFee;
+        address dopplerFeeReceiver_ = dopplerFeeReceiver;
+
+        _distributeTokenFees(
+            token0, collectedAmount0, integratorFeeReceiver, creatorFeeReceiver, dopplerFeeReceiver_, creatorFee
+        );
+        _distributeTokenFees(
+            token1, collectedAmount1, integratorFeeReceiver, creatorFeeReceiver, dopplerFeeReceiver_, creatorFee
+        );
+    }
+
+    /**
+     * @notice Distributes the fees to the fee receivers for a given token
+     * @param token Address of the token
+     * @param collectedAmount Amount of the token collected
+     * @param integratorFeeReceiver Address of the integrator fee receiver
+     * @param creatorFeeReceiver Address of the creator fee receiver
+     * @param dopplerFeeReceiver_ Address of the Doppler fee receiver
+     * @param creatorFee Creator fee
+     */
+    function _distributeTokenFees(
+        address token,
+        uint256 collectedAmount,
+        address integratorFeeReceiver,
+        address creatorFeeReceiver,
+        address dopplerFeeReceiver_,
+        uint256 creatorFee
+    ) internal {
+        if (collectedAmount == 0) return;
+
+        uint256 dopplerFeeAmount = FixedPointMathLib.mulWadDown(collectedAmount, DOPPLER_FEE_WAD);
+        uint256 creatorFeeAmount = FixedPointMathLib.mulWadDown(collectedAmount, creatorFee);
+
+        ERC20(token).safeTransfer(dopplerFeeReceiver_, dopplerFeeAmount);
+        if (creatorFeeAmount != 0) ERC20(token).safeTransfer(creatorFeeReceiver, creatorFeeAmount);
+
+        // This both ensures we will not underflow (which can be assumed as mulWadDown is floored)
+        // and that we will not transfer 0
+        if (collectedAmount > dopplerFeeAmount + creatorFeeAmount) {
+            ERC20(token).safeTransfer(integratorFeeReceiver, collectedAmount - dopplerFeeAmount - creatorFeeAmount);
         }
     }
 
