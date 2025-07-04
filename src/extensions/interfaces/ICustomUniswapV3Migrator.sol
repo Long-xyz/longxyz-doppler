@@ -8,14 +8,12 @@ interface ICustomUniswapV3Migrator is ILiquidityMigrator {
     event MigrateFailed(uint160 sqrtPriceX96, address token0, address token1, address recipient);
 
     error InvalidLiquidityMigratorDataLength();
-    error ZeroFeeReceiverAddress();
     error PoolDoesNotExist();
     error RebalanceFailed();
     error InvalidSwapCallbackCaller();
     error OnlySelf();
     error InvalidFallbackLiquidityMigrator();
     error InvalidTokenOrder();
-    error InvalidSqrtPriceX96();
 
     function fallbackLiquidityMigrator() external view returns (ILiquidityMigrator);
 
