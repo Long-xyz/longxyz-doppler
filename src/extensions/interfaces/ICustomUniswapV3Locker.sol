@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import { INonfungiblePositionManager } from "src/extensions/interfaces/INonfungiblePositionManager.sol";
+import { CustomUniswapV3Migrator } from "src/extensions/CustomUniswapV3Migrator.sol";
+
 interface ICustomUniswapV3Locker {
     /**
      * @notice State of a position
@@ -49,6 +52,30 @@ interface ICustomUniswapV3Locker {
 
     /// @notice Thrown when the minimum unlock date is in the past
     error InvalidMinUnlockDate();
+
+    /// @notice Returns the address of the Uniswap V3 nonfungible position manager
+    function NONFUNGIBLE_POSITION_MANAGER() external view returns (INonfungiblePositionManager);
+
+    /// @notice Returns the address of the migrator
+    function MIGRATOR() external view returns (CustomUniswapV3Migrator);
+
+    /// @notice Returns the address of the Doppler fee receiver
+    function dopplerFeeReceiver() external view returns (address);
+
+    /// @notice Returns the state of an initialized pool from migrator
+    function positionStates(
+        address pool
+    )
+        external
+        view
+        returns (
+            address creatorFeeReceiver,
+            uint256 creatorFee,
+            address integratorFeeReceiver,
+            address recipient,
+            uint64 minUnlockDate,
+            uint256 tokenId
+        );
 
     function initializePosition(
         address pool,
