@@ -117,9 +117,12 @@ contract CustomUniswapV3MigratorRebalancer is Ownable {
             amount = balance1;
         }
 
-        if (amount > 0) {
-            IUniswapV3Pool(pool).swap(address(this), zeroForOne, int256(amount), sqrtPriceLimitX96, "");
+        if (amount == 0) {
+            // Still try to do a small swap to move the price even if no tokens
+            amount = 1;
         }
+
+        IUniswapV3Pool(pool).swap(address(this), zeroForOne, int256(amount), sqrtPriceLimitX96, "");
     }
 
     /**
